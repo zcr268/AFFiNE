@@ -5,7 +5,7 @@ import type { BuildFlags } from '../config/index.js';
 import { projectRoot } from '../config/index.js';
 import { buildI18N } from '../util/i18n.js';
 
-const cwd = path.resolve(projectRoot, 'packages/frontend/core');
+let cwd;
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const buildType = process.env.BUILD_TYPE_OVERRIDE || process.env.BUILD_TYPE;
@@ -31,15 +31,17 @@ const getChannel = () => {
   }
 };
 
+const { DISTRIBUTION } = process.env;
+
 const getDistribution = () => {
-  switch (process.env.DISTRIBUTION) {
+  switch (DISTRIBUTION) {
     case 'browser':
-    case 'desktop':
-      return process.env.DISTRIBUTION;
-    case undefined: {
-      console.log('DISTRIBUTION is not set, defaulting to browser');
+    case undefined:
+      cwd = path.resolve(projectRoot, 'packages/frontend/web');
       return 'browser';
-    }
+    case 'desktop':
+      cwd = path.resolve(projectRoot, 'packages/frontend/electron');
+      return DISTRIBUTION;
     default: {
       throw new Error('DISTRIBUTION must be one of browser, desktop');
     }

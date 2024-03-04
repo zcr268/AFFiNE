@@ -4,6 +4,16 @@ import '@affine/component/theme/theme.css';
 import { AffineContext } from '@affine/component/context';
 import { GlobalLoading } from '@affine/component/global-loading';
 import { NotificationCenter } from '@affine/component/notification-center';
+import { WorkspaceFallback } from '@affine/component/workspace';
+import { GlobalScopeProvider } from '@affine/core/modules/infra-web/global-scope';
+import { CloudSessionProvider } from '@affine/core/providers/session-provider';
+import { router } from '@affine/core/router';
+import {
+  performanceLogger,
+  performanceRenderLogger,
+} from '@affine/core/shared';
+import createEmotionCache from '@affine/core/utils/create-emotion-cache';
+import { configureWebServices } from '@affine/core/web';
 import { createI18n, setUpLanguage } from '@affine/i18n';
 import { CacheProvider } from '@emotion/react';
 import { getCurrentStore } from '@toeverything/infra/atom';
@@ -11,14 +21,6 @@ import { ServiceCollection } from '@toeverything/infra/di';
 import type { PropsWithChildren, ReactElement } from 'react';
 import { lazy, Suspense } from 'react';
 import { RouterProvider } from 'react-router-dom';
-
-import { WorkspaceFallback } from './components/workspace';
-import { GlobalScopeProvider } from './modules/infra-web/global-scope';
-import { CloudSessionProvider } from './providers/session-provider';
-import { router } from './router';
-import { performanceLogger, performanceRenderLogger } from './shared';
-import createEmotionCache from './utils/create-emotion-cache';
-import { configureWebServices } from './web';
 
 const performanceI18nLogger = performanceLogger.namespace('i18n');
 const cache = createEmotionCache();
