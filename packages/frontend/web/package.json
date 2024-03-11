@@ -4,6 +4,11 @@
   "description": "AFFiNE Desktop Web application",
   "private": true,
   "browser": "src/index.tsx",
+  "scripts": {
+    "build": "yarn workspace @affine/cli build",
+    "dev": "yarn workspace @affine/cli dev",
+    "static-server": "yarn workspace @affine/cli dev --static"
+  },
   "dependencies": {
     "@affine/core": "workspace:*",
     "@affine/env": "workspace:*",
@@ -11,6 +16,7 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@affine/cli": "workspace:*",
     "@types/react": "^18.2.60",
     "@types/react-dom": "^18.2.19",
     "typescript": "^5.3.3"
