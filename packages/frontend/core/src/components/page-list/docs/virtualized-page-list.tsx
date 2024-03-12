@@ -3,10 +3,10 @@ import { useBlockSuiteMetaHelper } from '@affine/core/hooks/affine/use-block-sui
 import { useTrashModalHelper } from '@affine/core/hooks/affine/use-trash-modal-helper';
 import { useBlockSuiteDocMeta } from '@affine/core/hooks/use-block-suite-page-meta';
 import { Workbench } from '@affine/core/modules/workbench';
-import type { Collection, Filter } from '@affine/env/filter';
+import type { Collection, Filter, Tag } from '@affine/env/filter';
 import { Trans } from '@affine/i18n';
 import { useAFFiNEI18N } from '@affine/i18n/hooks';
-import type { DocMeta, Tag } from '@blocksuite/store';
+import type { DocMeta } from '@blocksuite/store';
 import { useService } from '@toeverything/infra';
 import { Workspace } from '@toeverything/infra';
 import { useCallback, useMemo, useRef, useState } from 'react';
