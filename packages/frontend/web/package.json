@@ -10,8 +10,11 @@
     "static-server": "yarn workspace @affine/cli dev --static"
   },
   "dependencies": {
+    "@affine/component": "workspace:*",
     "@affine/core": "workspace:*",
     "@affine/env": "workspace:*",
+    "@juggle/resize-observer": "^3.4.0",
+    "intl-segmenter-polyfill-rs": "^0.1.7",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

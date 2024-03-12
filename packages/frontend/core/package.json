@@ -5,7 +5,7 @@
   "version": "0.12.0",
   "exports": {
     "./app": "./src/app.tsx",
-    "./router": "./src/router.ts",
+    "./router": "./src/router.tsx",
     "./bootstrap/setup": "./src/bootstrap/setup.ts",
     "./bootstrap/register-plugins": "./src/bootstrap/register-plugins.ts",
     "./*": "./src/*"
@@ -35,7 +35,6 @@
     "@emotion/react": "^11.11.3",
     "@emotion/server": "^11.11.0",
     "@emotion/styled": "^11.11.0",
-    "@juggle/resize-observer": "^3.4.0",
     "@marsidev/react-turnstile": "^0.5.3",
     "@radix-ui/react-collapsible": "^1.0.3",
     "@radix-ui/react-dialog": "^1.0.5",
@@ -61,7 +60,6 @@
     "history": "^5.3.0",
     "idb": "^8.0.0",
     "image-blob-reduce": "^4.1.0",
-    "intl-segmenter-polyfill-rs": "^0.1.7",
     "jotai": "^2.6.5",
     "jotai-devtools": "^0.8.0",
     "jotai-effect": "^0.6.0",

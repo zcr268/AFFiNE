@@ -15,7 +15,9 @@ function main() {
   performanceMainLogger.info('start');
 
   // skip bootstrap setup for desktop onboarding
-  if (isDesktop && window.appInfo?.windowName !== 'onboarding') {
+  if (isDesktop && window.appInfo?.windowName === 'onboarding') {
+    performanceMainLogger.info('skip setup');
+  } else {
     performanceMainLogger.info('setup start');
     setup();
     performanceMainLogger.info('setup done');

@@ -17,7 +17,7 @@
     "node": "<21.0.0"
   },
   "scripts": {
-    "dev": "dev-core",
+    "dev": "yarn workspace @affine/cli dev",
     "dev:electron": "yarn workspace @affine/electron dev",
     "build": "yarn nx build @affine/web",
     "build:electron": "yarn nx build @affine/electron",

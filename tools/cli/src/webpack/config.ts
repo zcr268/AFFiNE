@@ -14,14 +14,14 @@ import TerserPlugin from 'terser-webpack-plugin';
 import webpack from 'webpack';
 import type { Configuration as DevServerConfiguration } from 'webpack-dev-server';
 
-import { type BuildFlags, projectRoot } from '../config';
+import { type BuildFlags, projectRoot } from '../config/index.js';
 import { productionCacheGroups } from './cache-group.js';
 import { WebpackS3Plugin } from './s3-plugin.js';
 
 const IN_CI = !!process.env.CI;
 
 export const rootPath = join(fileURLToPath(import.meta.url), '..', '..');
-const workspaceRoot = join(rootPath, '..', '..', '..');
+export const workspaceRoot = join(rootPath, '..', '..', '..');
 
 const require = createRequire(rootPath);
 
@@ -87,15 +87,15 @@ export const getPublicPath = (buildFlags: BuildFlags) => {
 };
 
 export const createConfiguration: (
+  cwd: string,
   buildFlags: BuildFlags,
   runtimeConfig: RuntimeConfig
-) => webpack.Configuration = (buildFlags, runtimeConfig) => {
+) => webpack.Configuration = (cwd, buildFlags, runtimeConfig) => {
   const blocksuiteBaseDir = buildFlags.localBlockSuite;
-
   const config = {
     name: 'affine',
     // to set a correct base path for the source map
-    context: projectRoot,
+    context: cwd,
     experiments: {
       topLevelAwait: true,
       outputModule: false,
@@ -122,7 +122,7 @@ export const createConfiguration: (
       devtoolModuleFilenameTemplate: 'webpack://[namespace]/[resource-path]',
       hotUpdateChunkFilename: 'hot/[id].[fullhash].js',
       hotUpdateMainFilename: 'hot/[runtime].[fullhash].json',
-      path: join(rootPath, 'dist'),
+      path: join(cwd, 'dist'),
       clean: buildFlags.mode === 'production',
       globalObject: 'globalThis',
       publicPath: getPublicPath(buildFlags),
@@ -307,7 +307,7 @@ export const createConfiguration: (
                     postcssOptions: {
                       config: resolve(
                         rootPath,
-                        '.webpack',
+                        'webpack',
                         'postcss.config.cjs'
                       ),
                     },
@@ -348,8 +348,9 @@ export const createConfiguration: (
       new CopyPlugin({
         patterns: [
           {
-            from: resolve(rootPath, 'public'),
-            to: resolve(rootPath, 'dist'),
+            // copy the shared public assets into dist
+            from: join(workspaceRoot, 'packages', 'frontend', 'core', 'public'),
+            to: join(cwd, 'dist'),
           },
         ],
       }),
@@ -367,11 +368,24 @@ export const createConfiguration: (
         overlay: process.env.DISABLE_DEV_OVERLAY === 'true' ? false : undefined,
       },
       historyApiFallback: true,
-      static: {
-        directory: resolve(rootPath, 'public'),
-        publicPath: '/',
-        watch: true,
-      },
+      static: [
+        {
+          directory: join(
+            projectRoot,
+            'packages',
+            'frontend',
+            'core',
+            'public'
+          ),
+          publicPath: '/',
+          watch: true,
+        },
+        {
+          directory: join(cwd, 'public'),
+          publicPath: '/',
+          watch: true,
+        },
+      ],
       proxy: [
         {
           context: '/api/worker/',

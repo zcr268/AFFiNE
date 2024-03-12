@@ -1,11 +1,13 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
+
+import webpack from 'webpack';
 
 import type { BuildFlags } from '../config/index.js';
 import { projectRoot } from '../config/index.js';
 import { buildI18N } from '../util/i18n.js';
+import { createWebpackConfig } from '../webpack/webpack.config.js';
 
-let cwd;
+let cwd: string;
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const buildType = process.env.BUILD_TYPE_OVERRIDE || process.env.BUILD_TYPE;
@@ -56,21 +58,15 @@ const flags = {
 } satisfies BuildFlags;
 
 buildI18N();
-spawn(
-  'node',
-  [
-    '--loader',
-    'ts-node/esm/transpile-only',
-    '../../../node_modules/webpack/bin/webpack.js',
-    '--mode',
-    'production',
-    '--env',
-    'flags=' + Buffer.from(JSON.stringify(flags), 'utf-8').toString('hex'),
-  ].filter((v): v is string => !!v),
-  {
-    cwd,
-    stdio: 'inherit',
-    shell: true,
-    env: process.env,
+
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+webpack(createWebpackConfig(cwd!, flags), (err, stats) => {
+  if (err) {
+    console.error(err);
+    process.exit(1);
   }
-);
+  if (stats?.hasErrors()) {
+    console.error(stats.toString('errors-only'));
+    process.exit(1);
+  }
+});
