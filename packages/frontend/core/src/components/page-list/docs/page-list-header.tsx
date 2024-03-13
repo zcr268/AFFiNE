@@ -1,15 +1,15 @@
 import { Button, Divider, Menu, Scrollable } from '@affine/component';
 import { useAsyncCallback } from '@affine/core/hooks/affine-async-hooks';
 import { useNavigateHelper } from '@affine/core/hooks/use-navigate-helper';
-import { WorkspaceLegacyProperties } from '@affine/core/modules/workspace';
-import type { Collection, Tag } from '@affine/env/filter';
+import { type Tag, TagService } from '@affine/core/modules/tag';
+import type { Collection } from '@affine/env/filter';
 import { useAFFiNEI18N } from '@affine/i18n/hooks';
 import {
   ArrowDownSmallIcon,
   SearchIcon,
   ViewLayersIcon,
 } from '@blocksuite/icons';
-import { useLiveData, useService } from '@toeverything/infra';
+import { LiveData, useLiveData, useService } from '@toeverything/infra';
 import clsx from 'clsx';
 import { nanoid } from 'nanoid';
 import { useCallback, useMemo, useState } from 'react';
@@ -17,6 +17,7 @@ import { Link } from 'react-router-dom';
 
 import { CollectionService } from '../../../modules/collection';
 import { createTagFilter } from '../filter/utils';
+import type { TagMeta } from '../types';
 import { createEmptyCollection } from '../use-collection-manager';
 import { tagColorMap } from '../utils';
 import type { AllPageListConfig } from '../view/edit-collection/edit-collection';
@@ -95,8 +96,17 @@ export const TagPageListHeader = ({
   tag: Tag;
   workspaceId: string;
 }) => {
-  const legacyProperties = useService(WorkspaceLegacyProperties);
-  const options = useLiveData(legacyProperties.tagOptions$);
+  const service = useService(TagService);
+  const tagMetas: TagMeta[] = useLiveData(service.tagMetas);
+
+  const liveData = LiveData.computed(get => {
+    return {
+      tagColor: get(tag.color),
+      tagTitle: get(tag.value),
+    };
+  });
+  const { tagColor, tagTitle } = useLiveData(liveData);
+
   const t = useAFFiNEI18N();
   const { jumpToTags, jumpToCollection } = useNavigateHelper();
   const collectionService = useService(CollectionService);
@@ -153,16 +163,16 @@ export const TagPageListHeader = ({
               avoidCollisions: false,
               className: styles.tagsMenu,
             }}
-            items={<TagsEditor options={options} onClick={setOpenMenu} />}
+            items={<TagsEditor tagMetas={tagMetas} onClick={setOpenMenu} />}
           >
             <div className={styles.tagSticky}>
               <div
                 className={styles.tagIndicator}
                 style={{
-                  backgroundColor: tagColorMap(tag.color),
+                  backgroundColor: tagColorMap(tagColor),
                 }}
               />
-              <div className={styles.tagLabel}>{tag.value}</div>
+              <div className={styles.tagLabel}>{tagTitle}</div>
               <ArrowDownSmallIcon className={styles.arrowDownSmallIcon} />
             </div>
           </Menu>
@@ -175,24 +185,26 @@ export const TagPageListHeader = ({
   );
 };
 
-const filterOption = (option: Tag, inputValue?: string) => {
+const filterOption = (tagMeta: TagMeta, inputValue?: string) => {
   const trimmedValue = inputValue?.trim().toLowerCase() ?? '';
-  const trimmedOptionValue = option.value.trim().toLowerCase();
+  const trimmedOptionValue = tagMeta.title.trim().toLowerCase();
   return trimmedOptionValue.includes(trimmedValue);
 };
 
 interface TagsEditorProps {
-  options: Tag[];
+  tagMetas: TagMeta[];
   onClick: (open: boolean) => void;
 }
 
-export const TagsEditor = ({ options, onClick }: TagsEditorProps) => {
+export const TagsEditor = ({ tagMetas, onClick }: TagsEditorProps) => {
   const t = useAFFiNEI18N();
   const [inputValue, setInputValue] = useState('');
   const filteredOptions = useMemo(
     () =>
-      options.filter(o => (inputValue ? filterOption(o, inputValue) : true)),
-    [inputValue, options]
+      tagMetas.filter(tagMeta =>
+        inputValue ? filterOption(tagMeta, inputValue) : true
+      ),
+    [tagMetas, inputValue]
   );
 
   const onInputChange = useCallback(
@@ -231,7 +243,7 @@ export const TagsEditor = ({ options, onClick }: TagsEditorProps) => {
                   key={tag.id}
                   className={styles.tagSelectorItem}
                   data-tag-id={tag.id}
-                  data-tag-value={tag.value}
+                  data-tag-value={tag.title}
                   to={`/tag/${tag.id}`}
                   onClick={handleClick}
                 >
@@ -239,7 +251,7 @@ export const TagsEditor = ({ options, onClick }: TagsEditorProps) => {
                     className={styles.tagIcon}
                     style={{ background: tag.color }}
                   />
-                  <div className={styles.tagSelectorItemText}>{tag.value}</div>
+                  <div className={styles.tagSelectorItemText}>{tag.title}</div>
                 </Link>
               );
             })}

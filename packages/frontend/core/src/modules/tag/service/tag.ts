@@ -41,4 +41,23 @@ export class TagService {
       return get(this.tags).filter(tag => tagIds.includes(tag.id));
     });
   }
+
+  tagByTagId(tagId?: string) {
+    return LiveData.computed(get => {
+      return get(this.tags).find(tag => tag.id === tagId);
+    });
+  }
+
+  tagMetas = LiveData.computed(get => {
+    return get(this.tags).map(tag => {
+      return {
+        id: tag.id,
+        title: get(tag.value),
+        color: get(tag.color),
+        pageCount: get(tag.pageIds).length,
+        createDate: get(tag.createDate),
+        updatedDate: get(tag.updateDate),
+      };
+    });
+  });
 }
