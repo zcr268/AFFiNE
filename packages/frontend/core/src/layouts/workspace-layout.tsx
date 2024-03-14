@@ -1,3 +1,4 @@
+import { LitPortalProvider } from '@affine/component';
 import { useWorkspaceStatus } from '@affine/core/hooks/use-workspace-status';
 import { assertExists } from '@blocksuite/global/utils';
 import {
@@ -158,7 +159,7 @@ export const WorkspaceLayoutInner = ({ children }: PropsWithChildren) => {
   const upgradeStatus = useWorkspaceStatus(currentWorkspace, s => s.upgrade);
 
   return (
-    <>
+    <LitPortalProvider>
       {/* This DndContext is used for drag page from all-pages list into a folder in sidebar */}
       <DndContext
         sensors={sensors}
@@ -200,7 +201,7 @@ export const WorkspaceLayoutInner = ({ children }: PropsWithChildren) => {
       </DndContext>
       <QuickSearch />
       <SyncAwareness />
-    </>
+    </LitPortalProvider>
   );
 };
 

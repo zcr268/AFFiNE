@@ -1,4 +1,7 @@
-import { createReactComponentFromLit } from '@affine/component';
+import {
+  createReactComponentFromLit,
+  useLitPortalFactory,
+} from '@affine/component';
 import { useJournalInfoHelper } from '@affine/core/hooks/use-journal';
 import {
   BiDirectionalLinkPanel,
@@ -80,9 +83,11 @@ export const BlocksuiteDocEditor = forwardRef<
     [ref]
   );
 
+  const litToTemplate = useLitPortalFactory();
+
   const specs = useMemo(() => {
-    return patchSpecs(docModeSpecs, customRenderers);
-  }, [customRenderers]);
+    return patchSpecs(docModeSpecs, litToTemplate, customRenderers);
+  }, [customRenderers, litToTemplate]);
 
   useEffect(() => {
     // auto focus the title
@@ -136,8 +141,9 @@ export const BlocksuiteEdgelessEditor = forwardRef<
   EdgelessEditor,
   BlocksuiteDocEditorProps
 >(function BlocksuiteEdgelessEditor({ page, customRenderers }, ref) {
+  const litToTemplate = useLitPortalFactory();
   const specs = useMemo(() => {
-    return patchSpecs(edgelessModeSpecs, customRenderers);
-  }, [customRenderers]);
+    return patchSpecs(edgelessModeSpecs, litToTemplate, customRenderers);
+  }, [customRenderers, litToTemplate]);
   return <adapted.EdgelessEditor ref={ref} doc={page} specs={specs} />;
 });
