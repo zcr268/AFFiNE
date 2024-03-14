@@ -23,7 +23,6 @@ export function getRuntimeConfig(buildFlags: BuildFlags): RuntimeConfig {
       enableMoveDatabase: false,
       enableNotificationCenter: true,
       enableCloud: true,
-      enableCaptcha: true,
       enableEnhanceShareMode: false,
       enablePayment: true,
       enablePageHistory: true,
@@ -65,7 +64,6 @@ export function getRuntimeConfig(buildFlags: BuildFlags): RuntimeConfig {
       enableMoveDatabase: false,
       enableNotificationCenter: true,
       enableCloud: true,
-      enableCaptcha: true,
       enableEnhanceShareMode: false,
       enablePayment: true,
       enablePageHistory: true,
@@ -111,11 +109,6 @@ export function getRuntimeConfig(buildFlags: BuildFlags): RuntimeConfig {
     enableCloud: process.env.ENABLE_CLOUD
       ? process.env.ENABLE_CLOUD === 'true'
       : currentBuildPreset.enableCloud,
-    enableCaptcha: process.env.ENABLE_CAPTCHA
-      ? process.env.ENABLE_CAPTCHA === 'true'
-      : buildFlags.mode === 'development'
-        ? false
-        : currentBuildPreset.enableCaptcha,
     enableEnhanceShareMode: process.env.ENABLE_ENHANCE_SHARE_MODE
       ? process.env.ENABLE_ENHANCE_SHARE_MODE === 'true'
       : currentBuildPreset.enableEnhanceShareMode,
