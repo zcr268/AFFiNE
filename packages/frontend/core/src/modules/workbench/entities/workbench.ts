@@ -1,69 +1,187 @@
+import { toURLSearchParams } from '@affine/core/modules/navigation/utils';
 import { Unreachable } from '@affine/env/constant';
-import { LiveData } from '@toeverything/infra';
-import type { To } from 'history';
-import { combineLatest, map, switchMap } from 'rxjs';
+import type { ReferenceParams } from '@blocksuite/affine/blocks';
+import { Entity, LiveData } from '@toeverything/infra';
+import { type To } from 'history';
+import { omit } from 'lodash-es';
+import { nanoid } from 'nanoid';
 
+import type { GlobalState } from '../../storage';
+import type { WorkbenchNewTabHandler } from '../services/workbench-new-tab-handler';
+import type { WorkbenchDefaultState } from '../services/workbench-view-state';
 import { View } from './view';
 
 export type WorkbenchPosition = 'beside' | 'active' | 'head' | 'tail' | number;
 
-interface WorkbenchOpenOptions {
-  at?: WorkbenchPosition;
+export type WorkbenchOpenOptions = {
+  at?: WorkbenchPosition | 'new-tab';
   replaceHistory?: boolean;
-}
+  show?: boolean; // only for new tab
+};
 
-export class Workbench {
-  readonly views$ = new LiveData([new View()]);
+const sidebarOpenKey = 'workbenchSidebarOpen';
+const sidebarWidthKey = 'workbenchSidebarWidth';
 
-  activeViewIndex$ = new LiveData(0);
-  activeView$ = LiveData.from(
-    combineLatest([this.views$, this.activeViewIndex$]).pipe(
-      map(([views, index]) => views[index])
-    ),
-    this.views$.value[this.activeViewIndex$.value]
-  );
-
-  basename$ = new LiveData('/');
-
-  location$ = LiveData.from(
-    this.activeView$.pipe(switchMap(view => view.location$)),
-    this.views$.value[this.activeViewIndex$.value].history.location
-  );
-
-  active(index: number) {
-    this.activeViewIndex$.next(index);
+export class Workbench extends Entity {
+  constructor(
+    private readonly defaultState: WorkbenchDefaultState,
+    private readonly newTabHandler: WorkbenchNewTabHandler,
+    private readonly globalState: GlobalState
+  ) {
+    super();
   }
 
-  createView(at: WorkbenchPosition = 'beside', defaultLocation: To) {
-    const view = new View(defaultLocation);
+  readonly activeViewIndex$ = new LiveData(this.defaultState.activeViewIndex);
+  readonly basename$ = new LiveData(this.defaultState.basename);
+
+  readonly views$: LiveData<View[]> = new LiveData(
+    this.defaultState.views.map(meta => {
+      return this.framework.createEntity(View, {
+        id: meta.id,
+        defaultLocation: meta.path,
+        icon: meta.icon,
+        title: meta.title,
+      });
+    })
+  );
+
+  activeView$ = LiveData.computed(get => {
+    const activeIndex = get(this.activeViewIndex$);
+    const views = get(this.views$);
+    // activeIndex could be out of bounds when reordering views
+    return views.at(activeIndex) || views[0];
+  });
+
+  location$ = LiveData.computed(get => {
+    return get(get(this.activeView$).location$);
+  });
+  sidebarOpen$ = LiveData.from(
+    this.globalState.watch<boolean>(sidebarOpenKey),
+    false
+  );
+  setSidebarOpen(open: boolean) {
+    this.globalState.set(sidebarOpenKey, open);
+  }
+  sidebarWidth$ = LiveData.from(
+    this.globalState.watch<number>(sidebarWidthKey),
+    320
+  );
+  setSidebarWidth(width: number) {
+    this.globalState.set(sidebarWidthKey, width);
+  }
+
+  active(index: number | View) {
+    if (typeof index === 'number') {
+      index = Math.max(0, Math.min(index, this.views$.value.length - 1));
+      this.activeViewIndex$.next(index);
+    } else {
+      this.activeViewIndex$.next(this.views$.value.indexOf(index));
+    }
+  }
+
+  updateBasename(basename: string) {
+    this.basename$.next(basename);
+  }
+
+  createView(
+    at: WorkbenchPosition = 'beside',
+    defaultLocation: To,
+    active = true
+  ) {
+    const view = this.framework.createEntity(View, {
+      id: nanoid(),
+      defaultLocation,
+    });
     const newViews = [...this.views$.value];
     newViews.splice(this.indexAt(at), 0, view);
     this.views$.next(newViews);
-    return newViews.indexOf(view);
+    const index = newViews.indexOf(view);
+    if (active) {
+      this.active(index);
+    }
+    return index;
   }
 
-  open(
-    to: To,
-    { at = 'active', replaceHistory = false }: WorkbenchOpenOptions = {}
-  ) {
-    let view = this.viewAt(at);
-    if (!view) {
-      const newIndex = this.createView(at, to);
-      view = this.viewAt(newIndex);
-      if (!view) {
-        throw new Unreachable();
-      }
+  openSidebar() {
+    this.setSidebarOpen(true);
+  }
+
+  closeSidebar() {
+    this.setSidebarOpen(false);
+  }
+
+  toggleSidebar() {
+    this.setSidebarOpen(!this.sidebarOpen$.value);
+  }
+
+  open(to: To, option: WorkbenchOpenOptions = {}) {
+    if (option.at === 'new-tab') {
+      this.newTab(to, {
+        show: option.show,
+      });
     } else {
-      if (replaceHistory) {
-        view.history.replace(to);
+      const { at = 'active', replaceHistory = false } = option;
+      let view = this.viewAt(at);
+      if (!view) {
+        const newIndex = this.createView(at, to, option.show);
+        view = this.viewAt(newIndex);
+        if (!view) {
+          throw new Unreachable();
+        }
       } else {
-        view.history.push(to);
+        if (replaceHistory) {
+          view.history.replace(to);
+        } else {
+          view.history.push(to);
+        }
       }
     }
   }
 
-  openPage(pageId: string, options?: WorkbenchOpenOptions) {
-    this.open(`/${pageId}`, options);
+  newTab(
+    to: To,
+    {
+      show,
+    }: {
+      show?: boolean;
+    } = {}
+  ) {
+    this.newTabHandler.handle({
+      basename: this.basename$.value,
+      to,
+      show: show ?? true,
+    });
+  }
+
+  openDoc(
+    id:
+      | string
+      | ({ docId: string } & (
+          | ReferenceParams
+          | Record<string, string | undefined>
+        )),
+    options?: WorkbenchOpenOptions
+  ) {
+    const isString = typeof id === 'string';
+    const docId = isString ? id : id.docId;
+
+    let query = '';
+    if (!isString) {
+      const search = toURLSearchParams(omit(id, ['docId']));
+      if (search?.size) {
+        query = `?${search.toString()}`;
+      }
+    }
+
+    this.open(`/${docId}${query}`, options);
+  }
+
+  openAttachment(
+    docId: string,
+    blockId: string,
+    options?: WorkbenchOpenOptions
+  ) {
+    this.open(`/${docId}/attachments/${blockId}`, options);
   }
 
   openCollections(options?: WorkbenchOpenOptions) {
@@ -114,9 +232,14 @@ export class Workbench {
   }
 
   moveView(from: number, to: number) {
+    from = Math.max(0, Math.min(from, this.views$.value.length - 1));
+    to = Math.max(0, Math.min(to, this.views$.value.length - 1));
+    if (from === to) return;
     const views = [...this.views$.value];
-    const [removed] = views.splice(from, 1);
-    views.splice(to, 0, removed);
+    const fromView = views[from];
+    const toView = views[to];
+    views[to] = fromView;
+    views[from] = toView;
     this.views$.next(views);
     this.active(to);
   }
@@ -141,7 +264,7 @@ export class Workbench {
     const newNextSize = Number(
       (nextView.size$.value - percentOfTotal).toFixed(4)
     );
-    // TODO: better strategy to limit size
+    // TODO(@catsjuice): better strategy to limit size
     if (newSize / totalViewSize < 0.2 || newNextSize / totalViewSize < 0.2)
       return;
     view.setSize(newSize);

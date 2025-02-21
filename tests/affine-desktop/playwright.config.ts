@@ -17,15 +17,19 @@ const config: PlaywrightTestConfig = {
   testDir: './e2e',
   fullyParallel: true,
   timeout: process.env.CI ? 50_000 : 30_000,
+  expect: {
+    timeout: process.env.CI ? 15_000 : 5_000,
+  },
   outputDir: testResultDir,
   use: {
     viewport: { width: 1440, height: 800 },
+    trace: 'retain-on-failure',
   },
 };
 
 if (process.env.CI) {
-  config.retries = 3;
-  config.workers = '50%';
+  config.retries = 5;
+  config.workers = 2;
 }
 
 if (process.env.DEV_SERVER_URL) {
@@ -36,7 +40,7 @@ if (process.env.DEV_SERVER_URL) {
   );
   config.webServer = [
     {
-      command: 'yarn run start:web-static',
+      command: 'yarn run -T affine bundle -p @affine/electron-renderer --dev',
       port: 8080,
       timeout: 120 * 1000,
       reuseExistingServer: !process.env.CI,

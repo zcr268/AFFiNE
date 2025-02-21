@@ -1,4 +1,5 @@
-import { useService, Workspace } from '@toeverything/infra';
+import { WorkspaceService } from '@affine/core/modules/workspace';
+import { useService } from '@toeverything/infra';
 import { useAtom } from 'jotai';
 import { atomWithStorage } from 'jotai/utils';
 import { useCallback } from 'react';
@@ -30,7 +31,7 @@ export const useAllDocDisplayProperties = (): [
     value: PageGroupByType | PageDisplayProperties
   ) => void,
 ] => {
-  const workspace = useService(Workspace);
+  const workspace = useService(WorkspaceService).workspace;
   const [properties, setProperties] = useAtom(displayPropertiesAtom);
 
   const workspaceProperties = properties[workspace.id] || defaultProps;

@@ -23,6 +23,8 @@ import {
   throttleTime,
 } from 'rxjs';
 
+import { shallowEqual } from '../utils/shallow-equal';
+
 const logger = new DebugLogger('livedata');
 
 /**
@@ -334,10 +336,36 @@ export class LiveData<T = unknown>
     return sub$;
   }
 
+  /**
+   * same as map, but do shallow equal check before emit
+   */
+  selector<R>(selector: (v: T) => R): LiveData<R> {
+    const sub$ = LiveData.from(
+      new Observable<R>(subscriber => {
+        let last: any = undefined;
+        return this.subscribe({
+          next: v => {
+            const data = selector(v);
+            if (!shallowEqual(last, data)) {
+              subscriber.next(data);
+            }
+            last = data;
+          },
+          complete: () => {
+            sub$.complete();
+          },
+        });
+      }),
+      undefined as R // is safe
+    );
+
+    return sub$;
+  }
+
   distinctUntilChanged(comparator?: (previous: T, current: T) => boolean) {
     return LiveData.from(
       this.pipe(distinctUntilChanged(comparator)),
-      null as any
+      null as T
     );
   }
 
@@ -345,7 +373,7 @@ export class LiveData<T = unknown>
     duration: number,
     { trailing = true, leading = true }: ThrottleConfig = {}
   ) {
-    return LiveData.from(
+    return LiveData.from<T>(
       this.pipe(throttleTime(duration, undefined, { trailing, leading })),
       null as any
     );
@@ -428,6 +456,9 @@ export class LiveData<T = unknown>
           if (v instanceof LiveData) {
             return (v as LiveData<any>).flat();
           } else if (Array.isArray(v)) {
+            if (v.length === 0) {
+              return of([]);
+            }
             return combineLatest(
               v.map(v => {
                 if (v instanceof LiveData) {
@@ -444,6 +475,34 @@ export class LiveData<T = unknown>
       ),
       null as any
     ) as any;
+  }
+
+  static flat<T>(v: T): Flat<LiveData<T>> {
+    return new LiveData(v).flat();
+  }
+
+  waitFor(predicate: (v: T) => unknown, signal?: AbortSignal): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const subscription = this.subscribe(v => {
+        if (predicate(v)) {
+          resolve(v as any);
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises
+          Promise.resolve().then(() => {
+            subscription.unsubscribe();
+          });
+        }
+      });
+      signal?.addEventListener('abort', reason => {
+        subscription.unsubscribe();
+        reject(reason);
+      });
+    });
+  }
+
+  waitForNonNull(signal?: AbortSignal) {
+    return this.waitFor(v => v !== null && v !== undefined, signal) as Promise<
+      NonNullable<T>
+    >;
   }
 
   reactSubscribe = (cb: () => void) => {
@@ -465,7 +524,8 @@ export class LiveData<T = unknown>
       throw this.poisonedError;
     }
     this.ops$.next('watch');
-    setImmediate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- never throw
+    Promise.resolve().then(() => {
       this.ops$.next('unwatch');
     });
     return this.raw$.value;
