@@ -1,140 +1,349 @@
 import {
+  GeneralNetworkError,
+  PaymentRequiredError,
+  UnauthorizedError,
+} from '@affine/core/blocksuite/presets/ai/_common/components/ai-item/types';
+import { showAILoginRequiredAtom } from '@affine/core/components/affine/auth/ai-login-required';
+import {
+  addContextDocMutation,
+  cleanupCopilotSessionMutation,
+  createCopilotContextMutation,
   createCopilotMessageMutation,
   createCopilotSessionMutation,
-  fetcher,
-  getBaseUrl,
+  forkCopilotSessionMutation,
   getCopilotHistoriesQuery,
+  getCopilotHistoryIdsQuery,
   getCopilotSessionsQuery,
+  GraphQLError,
   type GraphQLQuery,
+  listContextDocsAndFilesQuery,
+  listContextQuery,
+  type QueryOptions,
+  type QueryResponse,
+  removeContextDocMutation,
   type RequestOptions,
+  updateCopilotSessionMutation,
+  UserFriendlyError,
 } from '@affine/graphql';
+import { getCurrentStore } from '@toeverything/infra';
 
 type OptionsField<T extends GraphQLQuery> =
   RequestOptions<T>['variables'] extends { options: infer U } ? U : never;
 
+function codeToError(error: UserFriendlyError) {
+  switch (error.status) {
+    case 401:
+      return new UnauthorizedError();
+    case 402:
+      return new PaymentRequiredError();
+    default:
+      return new GeneralNetworkError(
+        error.code
+          ? `${error.code}: ${error.message}\nIdentify: ${error.name}`
+          : undefined
+      );
+  }
+}
+
+export function resolveError(err: any) {
+  const standardError =
+    err instanceof GraphQLError
+      ? new UserFriendlyError(err.extensions)
+      : UserFriendlyError.fromAnyError(err);
+
+  return codeToError(standardError);
+}
+
+export function handleError(src: any) {
+  const err = resolveError(src);
+  if (err instanceof UnauthorizedError) {
+    getCurrentStore().set(showAILoginRequiredAtom, true);
+  }
+  return err;
+}
+
 export class CopilotClient {
-  readonly backendUrl = getBaseUrl();
+  constructor(
+    readonly gql: <Query extends GraphQLQuery>(
+      options: QueryOptions<Query>
+    ) => Promise<QueryResponse<Query>>,
+    readonly fetcher: (input: string, init?: RequestInit) => Promise<Response>,
+    readonly eventSource: (
+      url: string,
+      eventSourceInitDict?: EventSourceInit
+    ) => EventSource
+  ) {}
 
   async createSession(
     options: OptionsField<typeof createCopilotSessionMutation>
   ) {
-    const res = await fetcher({
-      query: createCopilotSessionMutation,
-      variables: {
-        options,
-      },
-    });
-    return res.createCopilotSession;
+    try {
+      const res = await this.gql({
+        query: createCopilotSessionMutation,
+        variables: {
+          options,
+        },
+      });
+      return res.createCopilotSession;
+    } catch (err) {
+      throw resolveError(err);
+    }
+  }
+
+  async updateSession(
+    options: OptionsField<typeof updateCopilotSessionMutation>
+  ) {
+    try {
+      const res = await this.gql({
+        query: updateCopilotSessionMutation,
+        variables: {
+          options,
+        },
+      });
+      return res.updateCopilotSession;
+    } catch (err) {
+      throw resolveError(err);
+    }
+  }
+
+  async forkSession(options: OptionsField<typeof forkCopilotSessionMutation>) {
+    try {
+      const res = await this.gql({
+        query: forkCopilotSessionMutation,
+        variables: {
+          options,
+        },
+      });
+      return res.forkCopilotSession;
+    } catch (err) {
+      throw resolveError(err);
+    }
   }
 
   async createMessage(
     options: OptionsField<typeof createCopilotMessageMutation>
   ) {
-    const res = await fetcher({
-      query: createCopilotMessageMutation,
-      variables: {
-        options,
-      },
-    });
-    return res.createCopilotMessage;
+    try {
+      const res = await this.gql({
+        query: createCopilotMessageMutation,
+        variables: {
+          options,
+        },
+      });
+      return res.createCopilotMessage;
+    } catch (err) {
+      throw resolveError(err);
+    }
   }
 
-  async getSessions(workspaceId: string) {
-    const res = await fetcher({
-      query: getCopilotSessionsQuery,
-      variables: {
-        workspaceId,
-      },
-    });
-    return res.currentUser?.copilot;
+  async getSessionIds(
+    workspaceId: string,
+    docId?: string,
+    options?: RequestOptions<
+      typeof getCopilotSessionsQuery
+    >['variables']['options']
+  ) {
+    try {
+      const res = await this.gql({
+        query: getCopilotSessionsQuery,
+        variables: {
+          workspaceId,
+          docId,
+          options,
+        },
+      });
+      return res.currentUser?.copilot?.sessionIds;
+    } catch (err) {
+      throw resolveError(err);
+    }
   }
 
   async getHistories(
     workspaceId: string,
     docId?: string,
-    options?: OptionsField<typeof getCopilotHistoriesQuery>
+    options?: RequestOptions<
+      typeof getCopilotHistoriesQuery
+    >['variables']['options']
   ) {
-    const res = await fetcher({
-      query: getCopilotHistoriesQuery,
+    try {
+      const res = await this.gql({
+        query: getCopilotHistoriesQuery,
+        variables: {
+          workspaceId,
+          docId,
+          options,
+        },
+      });
+
+      return res.currentUser?.copilot?.histories;
+    } catch (err) {
+      throw resolveError(err);
+    }
+  }
+
+  async getHistoryIds(
+    workspaceId: string,
+    docId?: string,
+    options?: RequestOptions<
+      typeof getCopilotHistoriesQuery
+    >['variables']['options']
+  ) {
+    try {
+      const res = await this.gql({
+        query: getCopilotHistoryIdsQuery,
+        variables: {
+          workspaceId,
+          docId,
+          options,
+        },
+      });
+
+      return res.currentUser?.copilot?.histories;
+    } catch (err) {
+      throw resolveError(err);
+    }
+  }
+
+  async cleanupSessions(input: {
+    workspaceId: string;
+    docId: string;
+    sessionIds: string[];
+  }) {
+    try {
+      const res = await this.gql({
+        query: cleanupCopilotSessionMutation,
+        variables: {
+          input,
+        },
+      });
+      return res.cleanupCopilotSession;
+    } catch (err) {
+      throw resolveError(err);
+    }
+  }
+
+  async createContext(workspaceId: string, sessionId: string) {
+    const res = await this.gql({
+      query: createCopilotContextMutation,
       variables: {
         workspaceId,
-        docId,
+        sessionId,
+      },
+    });
+    return res.createCopilotContext;
+  }
+
+  async getContextId(workspaceId: string, sessionId: string) {
+    const res = await this.gql({
+      query: listContextQuery,
+      variables: {
+        workspaceId,
+        sessionId,
+      },
+    });
+    return res.currentUser?.copilot?.contexts?.[0]?.id;
+  }
+
+  async addContextDoc(options: OptionsField<typeof addContextDocMutation>) {
+    const res = await this.gql({
+      query: addContextDocMutation,
+      variables: {
         options,
       },
     });
-
-    return res.currentUser?.copilot?.histories;
+    return res.addContextDoc;
   }
 
-  async textToText(message: string, sessionId: string) {
-    const res = await fetch(
-      `${this.backendUrl}/api/copilot/chat/${sessionId}?message=${encodeURIComponent(message)}`
-    );
-    if (!res.ok) return;
-    return res.text();
+  async removeContextDoc(
+    options: OptionsField<typeof removeContextDocMutation>
+  ) {
+    const res = await this.gql({
+      query: removeContextDocMutation,
+      variables: {
+        options,
+      },
+    });
+    return res.removeContextDoc;
   }
 
-  textToTextStream(message: string, sessionId: string) {
-    return new EventSource(
-      `${this.backendUrl}/api/copilot/chat/${sessionId}/stream?message=${encodeURIComponent(message)}`
-    );
+  async addContextFile() {
+    return;
   }
 
-  chatText({
+  async removeContextFile() {
+    return;
+  }
+
+  async getContextDocsAndFiles(
+    workspaceId: string,
+    sessionId: string,
+    contextId: string
+  ) {
+    const res = await this.gql({
+      query: listContextDocsAndFilesQuery,
+      variables: {
+        workspaceId,
+        sessionId,
+        contextId,
+      },
+    });
+    return res.currentUser?.copilot?.contexts?.[0];
+  }
+
+  async chatText({
     sessionId,
     messageId,
-    message,
+    signal,
   }: {
     sessionId: string;
     messageId?: string;
-    message?: string;
+    signal?: AbortSignal;
   }) {
-    if (messageId && message) {
-      throw new Error('Only one of messageId or message can be provided');
-    } else if (!messageId && !message) {
-      throw new Error('Either messageId or message must be provided');
-    }
-    const url = new URL(`${this.backendUrl}/api/copilot/chat/${sessionId}`);
+    let url = `/api/copilot/chat/${sessionId}`;
     if (messageId) {
-      url.searchParams.set('messageId', messageId);
+      url += `?messageId=${encodeURIComponent(messageId)}`;
     }
-    if (message) {
-      url.searchParams.set('message', message);
-    }
-    return fetch(url.toString());
+    const response = await this.fetcher(url.toString(), { signal });
+    return response.text();
   }
 
   // Text or image to text
-  chatTextStream({
-    sessionId,
-    messageId,
-    message,
-  }: {
-    sessionId: string;
-    messageId?: string;
-    message?: string;
-  }) {
-    if (messageId && message) {
-      throw new Error('Only one of messageId or message can be provided');
-    } else if (!messageId && !message) {
-      throw new Error('Either messageId or message must be provided');
-    }
-    const url = new URL(
-      `${this.backendUrl}/api/copilot/chat/${sessionId}/stream`
-    );
+  chatTextStream(
+    {
+      sessionId,
+      messageId,
+    }: {
+      sessionId: string;
+      messageId?: string;
+    },
+    endpoint = 'stream'
+  ) {
+    let url = `/api/copilot/chat/${sessionId}/${endpoint}`;
     if (messageId) {
-      url.searchParams.set('messageId', messageId);
+      url += `?messageId=${encodeURIComponent(messageId)}`;
     }
-    if (message) {
-      url.searchParams.set('message', message);
-    }
-    return new EventSource(url.toString());
+    return this.eventSource(url);
   }
 
   // Text or image to images
-  imagesStream(messageId: string, sessionId: string) {
-    return new EventSource(
-      `${this.backendUrl}/api/copilot/chat/${sessionId}/images?messageId=${messageId}`
-    );
+  imagesStream(
+    sessionId: string,
+    messageId?: string,
+    seed?: string,
+    endpoint = 'images'
+  ) {
+    let url = `/api/copilot/chat/${sessionId}/${endpoint}`;
+
+    if (messageId || seed) {
+      url += '?';
+      url += new URLSearchParams(
+        Object.fromEntries(
+          Object.entries({ messageId, seed }).filter(
+            ([_, v]) => v !== undefined
+          )
+        ) as Record<string, string>
+      ).toString();
+    }
+    return this.eventSource(url);
   }
 }

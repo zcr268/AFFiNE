@@ -1,11 +1,5 @@
 import {
-  BadRequestException,
-  ForbiddenException,
-  UseGuards,
-} from '@nestjs/common';
-import {
   Args,
-  Context,
   Field,
   Mutation,
   ObjectType,
@@ -14,16 +8,26 @@ import {
   ResolveField,
   Resolver,
 } from '@nestjs/graphql';
-import type { Request, Response } from 'express';
 
-import { CloudThrottlerGuard, Config, Throttle } from '../../fundamentals';
-import { UserService } from '../user';
+import {
+  ActionForbidden,
+  EmailAlreadyUsed,
+  EmailTokenNotFound,
+  EmailVerificationRequired,
+  InvalidEmailToken,
+  LinkExpired,
+  SameEmailProvided,
+  SkipThrottle,
+  Throttle,
+  URLHelper,
+} from '../../base';
+import { Models, TokenType } from '../../models';
+import { Admin } from '../common';
 import { UserType } from '../user/types';
 import { validators } from '../utils/validators';
-import { CurrentUser } from './current-user';
 import { Public } from './guard';
 import { AuthService } from './service';
-import { TokenService, TokenType } from './token';
+import { CurrentUser } from './session';
 
 @ObjectType('tokenType')
 export class ClientTokenType {
@@ -37,28 +41,16 @@ export class ClientTokenType {
   sessionToken?: string;
 }
 
-/**
- * Auth resolver
- * Token rate limit: 20 req/m
- * Sign up/in rate limit: 10 req/m
- * Other rate limit: 5 req/m
- */
-@UseGuards(CloudThrottlerGuard)
+@Throttle('strict')
 @Resolver(() => UserType)
 export class AuthResolver {
   constructor(
-    private readonly config: Config,
+    private readonly url: URLHelper,
     private readonly auth: AuthService,
-    private readonly user: UserService,
-    private readonly token: TokenService
+    private readonly models: Models
   ) {}
 
-  @Throttle({
-    default: {
-      limit: 10,
-      ttl: 60,
-    },
-  })
+  @SkipThrottle()
   @Public()
   @Query(() => UserType, {
     name: 'currentUser',
@@ -69,94 +61,66 @@ export class AuthResolver {
     return user;
   }
 
-  @Throttle({
-    default: {
-      limit: 20,
-      ttl: 60,
-    },
-  })
   @ResolveField(() => ClientTokenType, {
     name: 'token',
-    deprecationReason: 'use [/api/auth/authorize]',
+    deprecationReason: 'use [/api/auth/sign-in?native=true] instead',
   })
   async clientToken(
     @CurrentUser() currentUser: CurrentUser,
     @Parent() user: UserType
   ): Promise<ClientTokenType> {
     if (user.id !== currentUser.id) {
-      throw new ForbiddenException('Invalid user');
+      throw new ActionForbidden();
     }
 
-    const session = await this.auth.createUserSession(
-      user,
-      undefined,
-      this.config.auth.accessToken.ttl
-    );
+    const userSession = await this.auth.createUserSession(user.id);
 
     return {
-      sessionToken: session.sessionId,
-      token: session.sessionId,
+      sessionToken: userSession.sessionId,
+      token: userSession.sessionId,
       refresh: '',
     };
   }
 
   @Public()
-  @Throttle({
-    default: {
-      limit: 10,
-      ttl: 60,
-    },
-  })
-  @Mutation(() => UserType)
-  async signUp(
-    @Context() ctx: { req: Request; res: Response },
-    @Args('name') name: string,
-    @Args('email') email: string,
-    @Args('password') password: string
-  ) {
-    validators.assertValidCredential({ email, password });
-    const user = await this.auth.signUp(name, email, password);
-    await this.auth.setCookie(ctx.req, ctx.res, user);
-    ctx.req.user = user;
-    return user;
-  }
-
-  @Public()
-  @Throttle({
-    default: {
-      limit: 10,
-      ttl: 60,
-    },
-  })
-  @Mutation(() => UserType)
-  async signIn(
-    @Context() ctx: { req: Request; res: Response },
-    @Args('email') email: string,
-    @Args('password') password: string
-  ) {
-    validators.assertValidEmail(email);
-    const user = await this.auth.signIn(email, password);
-    await this.auth.setCookie(ctx.req, ctx.res, user);
-    ctx.req.user = user;
-    return user;
-  }
-
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
-  @Mutation(() => UserType)
+  @Mutation(() => Boolean)
   async changePassword(
+    @Args('token') token: string,
+    @Args('newPassword') newPassword: string,
+    @Args('userId', { type: () => String, nullable: true }) userId?: string
+  ) {
+    if (!userId) {
+      throw new LinkExpired();
+    }
+
+    // NOTE: Set & Change password are using the same token type.
+    const valid = await this.models.verificationToken.verify(
+      TokenType.ChangePassword,
+      token,
+      {
+        credential: userId,
+      }
+    );
+
+    if (!valid) {
+      throw new InvalidEmailToken();
+    }
+
+    await this.auth.changePassword(userId, newPassword);
+    await this.auth.revokeUserSessions(userId);
+
+    return true;
+  }
+
+  @Mutation(() => UserType)
+  async changeEmail(
     @CurrentUser() user: CurrentUser,
     @Args('token') token: string,
-    @Args('newPassword') newPassword: string
+    @Args('email') email: string
   ) {
-    validators.assertValidPassword(newPassword);
-    // NOTE: Set & Change password are using the same token type.
-    const valid = await this.token.verifyToken(
-      TokenType.ChangePassword,
+    // @see [sendChangeEmail]
+    const valid = await this.models.verificationToken.verify(
+      TokenType.VerifyEmail,
       token,
       {
         credential: user.id,
@@ -164,106 +128,55 @@ export class AuthResolver {
     );
 
     if (!valid) {
-      throw new ForbiddenException('Invalid token');
-    }
-
-    await this.auth.changePassword(user.id, newPassword);
-
-    return user;
-  }
-
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
-  @Mutation(() => UserType)
-  async changeEmail(
-    @CurrentUser() user: CurrentUser,
-    @Args('token') token: string,
-    @Args('email') email: string
-  ) {
-    validators.assertValidEmail(email);
-    // @see [sendChangeEmail]
-    const valid = await this.token.verifyToken(TokenType.VerifyEmail, token, {
-      credential: user.id,
-    });
-
-    if (!valid) {
-      throw new ForbiddenException('Invalid token');
+      throw new InvalidEmailToken();
     }
 
     email = decodeURIComponent(email);
 
     await this.auth.changeEmail(user.id, email);
+    await this.auth.revokeUserSessions(user.id);
     await this.auth.sendNotificationChangeEmail(email);
 
     return user;
   }
 
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
   @Mutation(() => Boolean)
   async sendChangePasswordEmail(
     @CurrentUser() user: CurrentUser,
     @Args('callbackUrl') callbackUrl: string,
-    // @deprecated
-    @Args('email', { nullable: true }) _email?: string
+    @Args('email', {
+      nullable: true,
+      deprecationReason: 'fetched from signed in user',
+    })
+    _email?: string
   ) {
     if (!user.emailVerified) {
-      throw new ForbiddenException('Please verify your email first.');
+      throw new EmailVerificationRequired();
     }
 
-    const token = await this.token.createToken(
+    const token = await this.models.verificationToken.create(
       TokenType.ChangePassword,
       user.id
     );
 
-    const url = new URL(callbackUrl, this.config.baseUrl);
-    url.searchParams.set('token', token);
+    const url = this.url.link(callbackUrl, { userId: user.id, token });
 
-    const res = await this.auth.sendChangePasswordEmail(
-      user.email,
-      url.toString()
-    );
+    const res = await this.auth.sendChangePasswordEmail(user.email, url);
 
     return !res.rejected.length;
   }
 
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
   @Mutation(() => Boolean)
   async sendSetPasswordEmail(
     @CurrentUser() user: CurrentUser,
     @Args('callbackUrl') callbackUrl: string,
-    @Args('email', { nullable: true }) _email?: string
+    @Args('email', {
+      nullable: true,
+      deprecationReason: 'fetched from signed in user',
+    })
+    _email?: string
   ) {
-    if (!user.emailVerified) {
-      throw new ForbiddenException('Please verify your email first.');
-    }
-
-    const token = await this.token.createToken(
-      TokenType.ChangePassword,
-      user.id
-    );
-
-    const url = new URL(callbackUrl, this.config.baseUrl);
-    url.searchParams.set('token', token);
-
-    const res = await this.auth.sendSetPasswordEmail(
-      user.email,
-      url.toString()
-    );
-    return !res.rejected.length;
+    return this.sendChangePasswordEmail(user, callbackUrl);
   }
 
   // The change email step is:
@@ -273,12 +186,6 @@ export class AuthResolver {
   // 4. user open confirm email page from new email
   // 5. user click confirm button
   // 6. send notification email
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
   @Mutation(() => Boolean)
   async sendChangeEmail(
     @CurrentUser() user: CurrentUser,
@@ -287,24 +194,20 @@ export class AuthResolver {
     @Args('email', { nullable: true }) _email?: string
   ) {
     if (!user.emailVerified) {
-      throw new ForbiddenException('Please verify your email first.');
+      throw new EmailVerificationRequired();
     }
 
-    const token = await this.token.createToken(TokenType.ChangeEmail, user.id);
+    const token = await this.models.verificationToken.create(
+      TokenType.ChangeEmail,
+      user.id
+    );
 
-    const url = new URL(callbackUrl, this.config.baseUrl);
-    url.searchParams.set('token', token);
+    const url = this.url.link(callbackUrl, { token });
 
-    const res = await this.auth.sendChangeEmail(user.email, url.toString());
+    const res = await this.auth.sendChangeEmail(user.email, url);
     return !res.rejected.length;
   }
 
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
   @Mutation(() => Boolean)
   async sendVerifyChangeEmail(
     @CurrentUser() user: CurrentUser,
@@ -312,86 +215,99 @@ export class AuthResolver {
     @Args('email') email: string,
     @Args('callbackUrl') callbackUrl: string
   ) {
-    validators.assertValidEmail(email);
-    const valid = await this.token.verifyToken(TokenType.ChangeEmail, token, {
-      credential: user.id,
-    });
-
-    if (!valid) {
-      throw new ForbiddenException('Invalid token');
+    if (!token) {
+      throw new EmailTokenNotFound();
     }
 
-    const hasRegistered = await this.user.findUserByEmail(email);
+    validators.assertValidEmail(email);
+    const valid = await this.models.verificationToken.verify(
+      TokenType.ChangeEmail,
+      token,
+      {
+        credential: user.id,
+      }
+    );
+
+    if (!valid) {
+      throw new InvalidEmailToken();
+    }
+
+    const hasRegistered = await this.models.user.getUserByEmail(email);
 
     if (hasRegistered) {
       if (hasRegistered.id !== user.id) {
-        throw new BadRequestException(`The email provided has been taken.`);
+        throw new EmailAlreadyUsed();
       } else {
-        throw new BadRequestException(
-          `The email provided is the same as the current email.`
-        );
+        throw new SameEmailProvided();
       }
     }
 
-    const verifyEmailToken = await this.token.createToken(
+    const verifyEmailToken = await this.models.verificationToken.create(
       TokenType.VerifyEmail,
       user.id
     );
 
-    const url = new URL(callbackUrl, this.config.baseUrl);
-    url.searchParams.set('token', verifyEmailToken);
-    url.searchParams.set('email', email);
-
-    const res = await this.auth.sendVerifyChangeEmail(email, url.toString());
+    const url = this.url.link(callbackUrl, { token: verifyEmailToken, email });
+    const res = await this.auth.sendVerifyChangeEmail(email, url);
 
     return !res.rejected.length;
   }
 
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
   @Mutation(() => Boolean)
   async sendVerifyEmail(
     @CurrentUser() user: CurrentUser,
     @Args('callbackUrl') callbackUrl: string
   ) {
-    const token = await this.token.createToken(TokenType.VerifyEmail, user.id);
+    const token = await this.models.verificationToken.create(
+      TokenType.VerifyEmail,
+      user.id
+    );
 
-    const url = new URL(callbackUrl, this.config.baseUrl);
-    url.searchParams.set('token', token);
+    const url = this.url.link(callbackUrl, { token });
 
-    const res = await this.auth.sendVerifyEmail(user.email, url.toString());
+    const res = await this.auth.sendVerifyEmail(user.email, url);
     return !res.rejected.length;
   }
 
-  @Throttle({
-    default: {
-      limit: 5,
-      ttl: 60,
-    },
-  })
   @Mutation(() => Boolean)
   async verifyEmail(
     @CurrentUser() user: CurrentUser,
     @Args('token') token: string
   ) {
     if (!token) {
-      throw new BadRequestException('Invalid token');
+      throw new EmailTokenNotFound();
     }
 
-    const valid = await this.token.verifyToken(TokenType.VerifyEmail, token, {
-      credential: user.id,
-    });
+    const valid = await this.models.verificationToken.verify(
+      TokenType.VerifyEmail,
+      token,
+      {
+        credential: user.id,
+      }
+    );
 
     if (!valid) {
-      throw new ForbiddenException('Invalid token');
+      throw new InvalidEmailToken();
     }
 
     const { emailVerifiedAt } = await this.auth.setEmailVerified(user.id);
 
     return emailVerifiedAt !== null;
+  }
+
+  @Admin()
+  @Mutation(() => String, {
+    description: 'Create change password url',
+  })
+  async createChangePasswordUrl(
+    @Args('userId') userId: string,
+    @Args('callbackUrl') callbackUrl: string
+  ): Promise<string> {
+    const token = await this.models.verificationToken.create(
+      TokenType.ChangePassword,
+      userId
+    );
+
+    return this.url.link(callbackUrl, { userId, token });
   }
 }

@@ -1,148 +1,183 @@
+import { useRefEffect } from '@affine/component';
 import { EditorLoading } from '@affine/component/page-detail-skeleton';
-import { useDocMetaHelper } from '@affine/core/hooks/use-block-suite-page-meta';
-import { useJournalHelper } from '@affine/core/hooks/use-journal';
-import { useAFFiNEI18N } from '@affine/i18n/hooks';
-import { assertExists } from '@blocksuite/global/utils';
-import type { AffineEditorContainer } from '@blocksuite/presets';
-import type { Doc } from '@blocksuite/store';
-import { use } from 'foxact/use';
-import type { CSSProperties, ReactElement } from 'react';
+import { ServerService } from '@affine/core/modules/cloud';
 import {
-  forwardRef,
-  memo,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-} from 'react';
+  EditorSettingService,
+  fontStyleOptions,
+} from '@affine/core/modules/editor-setting';
+import {
+  customImageProxyMiddleware,
+  type DocMode,
+  ImageProxyService,
+  LinkPreviewerService,
+} from '@blocksuite/affine/blocks';
+import { DisposableGroup } from '@blocksuite/affine/global/utils';
+import type { Store } from '@blocksuite/affine/store';
+import { Slot } from '@radix-ui/react-slot';
+import { useLiveData, useService } from '@toeverything/infra';
+import { cssVar } from '@toeverything/theme';
+import type { CSSProperties } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import type { PageReferenceRendererOptions } from '../../affine/reference-link';
-import { AffinePageReference } from '../../affine/reference-link';
-import { BlocksuiteEditorContainer } from './blocksuite-editor-container';
+import type { DefaultOpenProperty } from '../../doc-properties';
+import {
+  type AffineEditorContainer,
+  BlocksuiteEditorContainer,
+} from './blocksuite-editor-container';
 import { NoPageRootError } from './no-page-error';
-import type { InlineRenderers } from './specs';
-
-export type ErrorBoundaryProps = {
-  onReset?: () => void;
-};
 
 export type EditorProps = {
-  page: Doc;
-  mode: 'page' | 'edgeless';
-  defaultSelectedBlockId?: string;
-  // on Editor instance instantiated
-  onLoadEditor?: (editor: AffineEditorContainer) => () => void;
+  page: Store;
+  mode: DocMode;
+  shared?: boolean;
+  readonly?: boolean;
+  defaultOpenProperty?: DefaultOpenProperty;
+  // on Editor ready
+  onEditorReady?: (editor: AffineEditorContainer) => (() => void) | void;
   style?: CSSProperties;
   className?: string;
 };
 
-function usePageRoot(page: Doc) {
-  if (!page.ready) {
-    page.load();
-  }
-
-  if (!page.root) {
-    use(
-      new Promise<void>((resolve, reject) => {
-        const disposable = page.slots.rootAdded.once(() => {
-          resolve();
-        });
-        window.setTimeout(() => {
-          disposable.dispose();
-          reject(new NoPageRootError(page));
-        }, 20 * 1000);
-      })
-    );
-  }
-
-  return page.root;
-}
-
-const customRenderersFactory: (
-  opts: Omit<PageReferenceRendererOptions, 'pageId'>
-) => InlineRenderers = opts => ({
-  pageReference(reference) {
-    const pageId = reference.delta.attributes?.reference?.pageId;
-    if (!pageId) {
-      return <span />;
-    }
-    return (
-      <AffinePageReference docCollection={opts.docCollection} pageId={pageId} />
-    );
-  },
-});
-
-const BlockSuiteEditorImpl = forwardRef<AffineEditorContainer, EditorProps>(
-  function BlockSuiteEditorImpl(
-    { mode, page, className, defaultSelectedBlockId, onLoadEditor, style },
-    ref
-  ) {
-    usePageRoot(page);
-    assertExists(page, 'page should not be null');
-    const editorDisposeRef = useRef<() => void>(() => {});
-    const editorRef = useRef<AffineEditorContainer | null>(null);
-
-    const onRefChange = useCallback(
-      (editor: AffineEditorContainer | null) => {
-        editorRef.current = editor;
-        if (ref) {
-          if (typeof ref === 'function') {
-            ref(editor);
-          } else {
-            ref.current = editor;
-          }
-        }
-        if (editor && onLoadEditor) {
-          editorDisposeRef.current = onLoadEditor(editor);
-        }
-      },
-      [onLoadEditor, ref]
-    );
-
-    useEffect(() => {
-      return () => {
-        editorDisposeRef.current();
-      };
-    }, []);
-
-    const pageMetaHelper = useDocMetaHelper(page.collection);
-    const journalHelper = useJournalHelper(page.collection);
-    const t = useAFFiNEI18N();
-
-    const customRenderers = useMemo(() => {
-      return customRenderersFactory({
-        pageMetaHelper,
-        journalHelper,
-        t,
-        docCollection: page.collection,
+const BlockSuiteEditorImpl = ({
+  mode,
+  page,
+  className,
+  shared,
+  readonly,
+  style,
+  onEditorReady,
+  defaultOpenProperty,
+}: EditorProps) => {
+  useEffect(() => {
+    const disposable = page.slots.blockUpdated.once(() => {
+      page.workspace.meta.setDocMeta(page.id, {
+        updatedDate: Date.now(),
       });
-    }, [journalHelper, page.collection, pageMetaHelper, t]);
+    });
+    return () => {
+      disposable.dispose();
+    };
+  }, [page]);
 
-    return (
-      <BlocksuiteEditorContainer
-        mode={mode}
-        page={page}
-        ref={onRefChange}
-        className={className}
-        style={style}
-        customRenderers={customRenderers}
-        defaultSelectedBlockId={defaultSelectedBlockId}
-      />
+  const server = useService(ServerService).server;
+
+  const editorRef = useRefEffect(
+    (editor: AffineEditorContainer) => {
+      globalThis.currentEditor = editor;
+      let canceled = false;
+      const disposableGroup = new DisposableGroup();
+
+      // Invoke onLoad once the editor has been mounted to the DOM.
+      if (canceled) {
+        return;
+      }
+
+      // provide image proxy endpoint to blocksuite
+      const imageProxyUrl = new URL(
+        BUILD_CONFIG.imageProxyUrl,
+        server.baseUrl
+      ).toString();
+
+      const linkPreviewUrl = new URL(
+        BUILD_CONFIG.linkPreviewUrl,
+        server.baseUrl
+      ).toString();
+
+      editor.std.clipboard.use(customImageProxyMiddleware(imageProxyUrl));
+      page.get(LinkPreviewerService).setEndpoint(linkPreviewUrl);
+      page.get(ImageProxyService).setImageProxyURL(imageProxyUrl);
+
+      editor.updateComplete
+        .then(() => {
+          if (onEditorReady) {
+            const dispose = onEditorReady(editor);
+            if (dispose) {
+              disposableGroup.add(dispose);
+            }
+          }
+        })
+        .catch(error => {
+          console.error('Error updating editor', error);
+        });
+
+      return () => {
+        canceled = true;
+        disposableGroup.dispose();
+      };
+    },
+    [onEditorReady, page, server]
+  );
+
+  return (
+    <BlocksuiteEditorContainer
+      mode={mode}
+      page={page}
+      shared={shared}
+      readonly={readonly}
+      defaultOpenProperty={defaultOpenProperty}
+      ref={editorRef}
+      className={className}
+      style={style}
+    />
+  );
+};
+
+export const BlockSuiteEditor = (props: EditorProps) => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const editorSetting = useService(EditorSettingService).editorSetting;
+  const settings = useLiveData(
+    editorSetting.settings$.selector(s => ({
+      fontFamily: s.fontFamily,
+      customFontFamily: s.customFontFamily,
+      fullWidthLayout: s.fullWidthLayout,
+    }))
+  );
+  const fontFamily = useMemo(() => {
+    const fontStyle = fontStyleOptions.find(
+      option => option.key === settings.fontFamily
     );
-  }
-);
-
-export const BlockSuiteEditor = memo(
-  forwardRef<AffineEditorContainer, EditorProps>(
-    function BlockSuiteEditor(props, ref): ReactElement {
-      return (
-        <Suspense fallback={<EditorLoading />}>
-          <BlockSuiteEditorImpl key={props.page.id} ref={ref} {...props} />
-        </Suspense>
-      );
+    if (!fontStyle) {
+      return cssVar('fontSansFamily');
     }
-  )
-);
+    const customFontFamily = settings.customFontFamily;
 
-BlockSuiteEditor.displayName = 'BlockSuiteEditor';
+    return customFontFamily && fontStyle.key === 'Custom'
+      ? `${customFontFamily}, ${fontStyle.value}`
+      : fontStyle.value;
+  }, [settings.customFontFamily, settings.fontFamily]);
+
+  useEffect(() => {
+    if (props.page.root) {
+      setIsLoading(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      disposable.dispose();
+      setError(new NoPageRootError(props.page));
+    }, 20 * 1000);
+    const disposable = props.page.slots.rootAdded.once(() => {
+      setIsLoading(false);
+      clearTimeout(timer);
+    });
+    return () => {
+      disposable.dispose();
+      clearTimeout(timer);
+    };
+  }, [props.page]);
+
+  if (error) {
+    throw error;
+  }
+
+  return (
+    <Slot style={{ '--affine-font-family': fontFamily } as CSSProperties}>
+      {isLoading ? (
+        <EditorLoading />
+      ) : (
+        <BlockSuiteEditorImpl key={props.page.id} {...props} />
+      )}
+    </Slot>
+  );
+};

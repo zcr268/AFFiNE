@@ -1,5 +1,5 @@
 import type { PasswordLimitsFragment } from '@affine/graphql';
-import { useAFFiNEI18N } from '@affine/i18n/hooks';
+import { useI18n } from '@affine/i18n';
 import type { FC } from 'react';
 import { useCallback, useState } from 'react';
 
@@ -7,11 +7,10 @@ import { Button } from '../../ui/button';
 import { notify } from '../../ui/notification';
 import { AuthPageContainer } from './auth-page-container';
 import { SetPassword } from './set-password';
-import type { User } from './type';
 
 export const SignUpPage: FC<{
   passwordLimits: PasswordLimitsFragment;
-  user: User;
+  user: { email?: string };
   onSetPassword: (password: string) => Promise<void>;
   openButtonText?: string;
   onOpenAffine: () => void;
@@ -22,7 +21,7 @@ export const SignUpPage: FC<{
   onOpenAffine,
   openButtonText,
 }) => {
-  const t = useAFFiNEI18N();
+  const t = useI18n();
   const [hasSetUp, setHasSetUp] = useState(false);
 
   const onSetPassword = useCallback(
@@ -64,7 +63,7 @@ export const SignUpPage: FC<{
       }
     >
       {hasSetUp ? (
-        <Button type="primary" size="large" onClick={onOpenAffine}>
+        <Button variant="primary" size="large" onClick={onOpenAffine}>
           {openButtonText ?? t['com.affine.auth.open.affine']()}
         </Button>
       ) : (

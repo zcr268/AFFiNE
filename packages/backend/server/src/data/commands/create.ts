@@ -54,7 +54,7 @@ export class CreateCommand extends CommandRunner {
 
     this.logger.log(`Creating ${fileName}...`);
     writeFileSync(filePath, content);
-    this.logger.log('Migration file created at', filePath);
+    this.logger.log(`Migration file created at ${filePath}`);
     this.logger.log('Done');
   }
 
