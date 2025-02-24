@@ -1,0 +1,50 @@
+import { generateUrl } from '@affine/core/components/hooks/affine/use-share-url';
+import { WorkspaceServerService } from '@affine/core/modules/cloud';
+import { resolveLinkToDoc } from '@affine/core/modules/navigation/utils';
+import { WorkspaceService } from '@affine/core/modules/workspace';
+import {
+  GenerateDocUrlExtension,
+  ParseDocUrlExtension,
+  type ReferenceParams,
+} from '@blocksuite/affine/blocks';
+import type { FrameworkProvider } from '@toeverything/infra';
+
+function patchParseDocUrlExtension(framework: FrameworkProvider) {
+  const workspaceService = framework.get(WorkspaceService);
+  const ParseDocUrl = ParseDocUrlExtension({
+    parseDocUrl(url) {
+      const info = resolveLinkToDoc(url);
+      if (!info || info.workspaceId !== workspaceService.workspace.id) return;
+
+      delete info.refreshKey;
+
+      return info;
+    },
+  });
+
+  return ParseDocUrl;
+}
+
+function patchGenerateDocUrlExtension(framework: FrameworkProvider) {
+  const workspaceService = framework.get(WorkspaceService);
+  const workspaceServerService = framework.get(WorkspaceServerService);
+  const GenerateDocUrl = GenerateDocUrlExtension({
+    generateDocUrl(pageId: string, params?: ReferenceParams) {
+      return generateUrl({
+        ...params,
+        pageId,
+        workspaceId: workspaceService.workspace.id,
+        baseUrl: workspaceServerService.server?.baseUrl ?? location.origin,
+      });
+    },
+  });
+
+  return GenerateDocUrl;
+}
+
+export function patchDocUrlExtensions(framework: FrameworkProvider) {
+  return [
+    patchParseDocUrlExtension(framework),
+    patchGenerateDocUrlExtension(framework),
+  ];
+}

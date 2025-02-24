@@ -1,43 +1,11 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotAcceptableException,
-  OnApplicationBootstrap,
-} from '@nestjs/common';
-import type { User } from '@prisma/client';
-import { PrismaClient } from '@prisma/client';
+import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import type { CookieOptions, Request, Response } from 'express';
-import { assign, omit } from 'lodash-es';
+import { assign, pick } from 'lodash-es';
 
-import { Config, CryptoHelper, MailService } from '../../fundamentals';
-import { FeatureManagementService } from '../features/management';
-import { QuotaService } from '../quota/service';
-import { QuotaType } from '../quota/types';
-import { UserService } from '../user/service';
-import type { CurrentUser } from './current-user';
-
-export function parseAuthUserSeqNum(value: any) {
-  let seq: number = 0;
-  switch (typeof value) {
-    case 'number': {
-      seq = value;
-      break;
-    }
-    case 'string': {
-      const result = value.match(/^([\d{0, 10}])$/);
-      if (result?.[1]) {
-        seq = Number(result[1]);
-      }
-      break;
-    }
-
-    default: {
-      seq = 0;
-    }
-  }
-
-  return Math.max(0, seq);
-}
+import { Config, MailService, SignUpForbidden } from '../../base';
+import { Models, type User, type UserSession } from '../../models';
+import { FeatureService } from '../features';
+import type { CurrentUser } from './session';
 
 export function sessionUser(
   user: Pick<
@@ -45,13 +13,19 @@ export function sessionUser(
     'id' | 'email' | 'avatarUrl' | 'name' | 'emailVerifiedAt'
   > & { password?: string | null }
 ): CurrentUser {
-  return assign(
-    omit(user, 'password', 'registered', 'emailVerifiedAt', 'createdAt'),
-    {
-      hasPassword: user.password !== null,
-      emailVerified: user.emailVerifiedAt !== null,
-    }
-  );
+  // use pick to avoid unexpected fields
+  return assign(pick(user, 'id', 'email', 'avatarUrl', 'name'), {
+    hasPassword: user.password !== null,
+    emailVerified: user.emailVerifiedAt !== null,
+  });
+}
+
+function extractTokenFromHeader(authorization: string) {
+  if (!/^Bearer\s/i.test(authorization)) {
+    return;
+  }
+
+  return authorization.substring(7);
 }
 
 @Injectable()
@@ -60,343 +34,306 @@ export class AuthService implements OnApplicationBootstrap {
     sameSite: 'lax',
     httpOnly: true,
     path: '/',
-    secure: this.config.https,
+    secure: this.config.server.https,
   };
   static readonly sessionCookieName = 'affine_session';
-  static readonly authUserSeqHeaderName = 'x-auth-user';
+  static readonly userCookieName = 'affine_user_id';
 
   constructor(
     private readonly config: Config,
-    private readonly db: PrismaClient,
+    private readonly models: Models,
     private readonly mailer: MailService,
-    private readonly feature: FeatureManagementService,
-    private readonly quota: QuotaService,
-    private readonly user: UserService,
-    private readonly crypto: CryptoHelper
+    private readonly feature: FeatureService
   ) {}
 
   async onApplicationBootstrap() {
     if (this.config.node.dev) {
       try {
-        const devUser = await this.signUp('Dev User', 'dev@affine.pro', 'dev');
-        if (devUser) {
-          await this.quota.switchUserQuota(devUser?.id, QuotaType.ProPlanV1);
+        const [email, name, password] = ['dev@affine.pro', 'Dev User', 'dev'];
+        let devUser = await this.models.user.getUserByEmail(email);
+        if (!devUser) {
+          devUser = await this.models.user.create({
+            email,
+            name,
+            password,
+          });
         }
-      } catch (e) {
+        await this.models.userFeature.add(
+          devUser.id,
+          'administrator',
+          'dev user'
+        );
+        await this.models.userFeature.add(
+          devUser.id,
+          'unlimited_copilot',
+          'dev user'
+        );
+      } catch {
         // ignore
       }
     }
   }
 
-  canSignIn(email: string) {
-    return this.feature.canEarlyAccess(email);
+  async canSignIn(email: string) {
+    return await this.feature.canEarlyAccess(email);
   }
 
-  async signUp(
-    name: string,
-    email: string,
-    password: string
-  ): Promise<CurrentUser> {
-    const user = await this.user.findUserByEmail(email);
-
-    if (user) {
-      throw new BadRequestException('Email was taken');
+  /**
+   * This is a test only helper to quickly signup a user, do not use in production
+   */
+  async signUp(email: string, password: string): Promise<CurrentUser> {
+    if (!this.config.node.test) {
+      throw new SignUpForbidden(
+        'sign up helper is forbidden for non-test environment'
+      );
     }
 
-    const hashedPassword = await this.crypto.encryptPassword(password);
-
-    return this.user
-      .createUser({
-        name,
+    return this.models.user
+      .create({
         email,
-        password: hashedPassword,
+        password,
       })
       .then(sessionUser);
   }
 
-  async signIn(email: string, password: string) {
-    const user = await this.user.findUserWithHashedPasswordByEmail(email);
-
-    if (!user) {
-      throw new NotAcceptableException('Invalid sign in credentials');
-    }
-
-    if (!user.password) {
-      throw new NotAcceptableException(
-        'User Password is not set. Should login through email link.'
-      );
-    }
-
-    const passwordMatches = await this.crypto.verifyPassword(
-      password,
-      user.password
-    );
-
-    if (!passwordMatches) {
-      throw new NotAcceptableException('Invalid sign in credentials');
-    }
-
-    return sessionUser(user);
+  async signIn(email: string, password: string): Promise<CurrentUser> {
+    return this.models.user.signIn(email, password).then(sessionUser);
   }
 
-  async getUser(token: string, seq = 0): Promise<CurrentUser | null> {
-    const session = await this.getSession(token);
-
-    // no such session
-    if (!session) {
-      return null;
-    }
-
-    const userSession = session.userSessions.at(seq);
-
-    // no such user session
-    if (!userSession) {
-      return null;
-    }
-
-    // user session expired
-    if (userSession.expiresAt && userSession.expiresAt <= new Date()) {
-      return null;
-    }
-
-    const user = await this.db.user.findUnique({
-      where: { id: userSession.userId },
-    });
-
-    if (!user) {
-      return null;
-    }
-
-    return sessionUser(user);
-  }
-
-  async getUserList(token: string) {
-    const session = await this.getSession(token);
-
-    if (!session || !session.userSessions.length) {
-      return [];
-    }
-
-    const users = await this.db.user.findMany({
-      where: {
-        id: {
-          in: session.userSessions.map(({ userId }) => userId),
-        },
-      },
-    });
-
-    // TODO(@forehalo): need to separate expired session, same for [getUser]
-    // Session
-    //   | { user: LimitedUser { email, avatarUrl }, expired: true }
-    //   | { user: User, expired: false }
-    return session.userSessions
-      .map(userSession => {
-        // keep users in the same order as userSessions
-        const user = users.find(({ id }) => id === userSession.userId);
-        if (!user) {
-          return null;
-        }
-        return sessionUser(user);
-      })
-      .filter(Boolean) as CurrentUser[];
-  }
-
-  async signOut(token: string, seq = 0) {
-    const session = await this.getSession(token);
-
-    if (session) {
-      // overflow the logged in user
-      if (session.userSessions.length <= seq) {
-        return session;
-      }
-
-      await this.db.userSession.deleteMany({
-        where: { id: session.userSessions[seq].id },
-      });
-
-      // no more user session active, delete the whole session
-      if (session.userSessions.length === 1) {
-        await this.db.session.delete({ where: { id: session.id } });
-        return null;
-      }
-
-      return session;
-    }
-
-    return null;
-  }
-
-  async getSession(token: string) {
-    if (!token) {
-      return null;
-    }
-
-    return this.db.$transaction(async tx => {
-      const session = await tx.session.findUnique({
-        where: {
-          id: token,
-        },
-        include: {
-          userSessions: {
-            orderBy: {
-              createdAt: 'asc',
-            },
-          },
-        },
-      });
-
-      if (!session) {
-        return null;
-      }
-
-      if (session.expiresAt && session.expiresAt <= new Date()) {
-        await tx.session.delete({
-          where: {
-            id: session.id,
-          },
-        });
-
-        return null;
-      }
-
-      return session;
-    });
-  }
-
-  async createUserSession(
-    user: { id: string },
-    existingSession?: string,
-    ttl = this.config.auth.session.ttl
-  ) {
-    const session = existingSession
-      ? await this.getSession(existingSession)
-      : null;
-
-    const expiresAt = new Date(Date.now() + ttl * 1000);
-    if (session) {
-      return this.db.userSession.upsert({
-        where: {
-          sessionId_userId: {
-            sessionId: session.id,
-            userId: user.id,
-          },
-        },
-        update: {
-          expiresAt,
-        },
-        create: {
-          sessionId: session.id,
-          userId: user.id,
-          expiresAt,
-        },
-      });
+  async signOut(sessionId: string, userId?: string) {
+    // sign out all users in the session
+    if (!userId) {
+      await this.models.session.deleteSession(sessionId);
     } else {
-      return this.db.userSession.create({
-        data: {
-          expiresAt,
-          session: {
-            create: {},
-          },
-          user: {
-            connect: {
-              id: user.id,
-            },
-          },
-        },
-      });
+      await this.models.session.deleteUserSession(userId, sessionId);
     }
   }
 
-  async setCookie(_req: Request, res: Response, user: { id: string }) {
-    const session = await this.createUserSession(
-      user
-      // TODO(@forehalo): enable multi user session
-      // req.cookies[AuthService.sessionCookieName]
-    );
+  async getUserSession(
+    sessionId: string,
+    userId?: string
+  ): Promise<{ user: CurrentUser; session: UserSession } | null> {
+    const sessions = await this.getUserSessions(sessionId);
 
-    res.cookie(AuthService.sessionCookieName, session.sessionId, {
-      expires: session.expiresAt ?? void 0,
+    if (!sessions.length) {
+      return null;
+    }
+
+    let userSession: UserSession | undefined;
+
+    // try read from user provided cookies.userId
+    if (userId) {
+      userSession = sessions.find(s => s.userId === userId);
+    }
+
+    // fallback to the first valid session if user provided userId is invalid
+    if (!userSession) {
+      // checked
+      // oxlint-disable-next-line @typescript-eslint/no-non-null-assertion
+      userSession = sessions.at(-1)!;
+    }
+
+    const user = await this.models.user.get(userSession.userId);
+
+    if (!user) {
+      return null;
+    }
+
+    return { user: sessionUser(user), session: userSession };
+  }
+
+  async getUserSessions(sessionId: string) {
+    return await this.models.session.findUserSessionsBySessionId(sessionId);
+  }
+
+  async createUserSession(userId: string, sessionId?: string, ttl?: number) {
+    return await this.models.session.createOrRefreshUserSession(
+      userId,
+      sessionId,
+      ttl
+    );
+  }
+
+  async getUserList(sessionId: string) {
+    const sessions = await this.models.session.findUserSessionsBySessionId(
+      sessionId,
+      {
+        user: true,
+      }
+    );
+    return sessions.map(({ user }) => sessionUser(user));
+  }
+
+  async createSession() {
+    return await this.models.session.createSession();
+  }
+
+  async getSession(sessionId: string) {
+    return await this.models.session.getSession(sessionId);
+  }
+
+  async refreshUserSessionIfNeeded(
+    res: Response,
+    userSession: UserSession,
+    ttr?: number
+  ): Promise<boolean> {
+    const newExpiresAt = await this.models.session.refreshUserSessionIfNeeded(
+      userSession,
+      ttr
+    );
+    if (!newExpiresAt) {
+      // no need to refresh
+      return false;
+    }
+
+    res.cookie(AuthService.sessionCookieName, userSession.sessionId, {
+      expires: newExpiresAt,
       ...this.cookieOptions,
     });
+
+    return true;
   }
 
-  async changePassword(id: string, newPassword: string): Promise<User> {
-    const user = await this.user.findUserById(id);
+  async revokeUserSessions(userId: string) {
+    return await this.models.session.deleteUserSession(userId);
+  }
 
-    if (!user) {
-      throw new BadRequestException('Invalid email');
+  getSessionOptionsFromRequest(req: Request) {
+    let sessionId: string | undefined =
+      req.cookies[AuthService.sessionCookieName];
+
+    if (!sessionId && req.headers.authorization) {
+      sessionId = extractTokenFromHeader(req.headers.authorization);
     }
 
-    const hashedPassword = await this.crypto.encryptPassword(newPassword);
+    const userId: string | undefined =
+      req.cookies[AuthService.userCookieName] ||
+      req.headers[AuthService.userCookieName.replaceAll('_', '-')];
 
-    return this.db.user.update({
-      where: {
-        id: user.id,
-      },
-      data: {
-        password: hashedPassword,
-      },
+    return {
+      sessionId,
+      userId,
+    };
+  }
+
+  async setCookies(req: Request, res: Response, userId: string) {
+    const { sessionId } = this.getSessionOptionsFromRequest(req);
+
+    const userSession = await this.createUserSession(userId, sessionId);
+
+    res.cookie(AuthService.sessionCookieName, userSession.sessionId, {
+      ...this.cookieOptions,
+      expires: userSession.expiresAt ?? void 0,
+    });
+
+    this.setUserCookie(res, userId);
+  }
+
+  async refreshCookies(res: Response, sessionId?: string) {
+    if (sessionId) {
+      const users = await this.getUserList(sessionId);
+      const candidateUser = users.at(-1);
+
+      if (candidateUser) {
+        this.setUserCookie(res, candidateUser.id);
+        return;
+      }
+    }
+
+    this.clearCookies(res);
+  }
+
+  private clearCookies(res: Response<any, Record<string, any>>) {
+    res.clearCookie(AuthService.sessionCookieName);
+    res.clearCookie(AuthService.userCookieName);
+  }
+
+  setUserCookie(res: Response, userId: string) {
+    res.cookie(AuthService.userCookieName, userId, {
+      ...this.cookieOptions,
+      // user cookie is client readable & writable for fast user switch if there are multiple users in one session
+      // it safe to be non-secure & non-httpOnly because server will validate it by `cookie[AuthService.sessionCookieName]`
+      httpOnly: false,
+      secure: false,
     });
   }
 
-  async changeEmail(id: string, newEmail: string): Promise<User> {
-    const user = await this.user.findUserById(id);
+  async getUserSessionFromRequest(req: Request, res?: Response) {
+    const { sessionId, userId } = this.getSessionOptionsFromRequest(req);
 
-    if (!user) {
-      throw new BadRequestException('Invalid email');
+    if (!sessionId) {
+      return null;
     }
 
-    return this.db.user.update({
-      where: {
-        id,
-      },
-      data: {
-        email: newEmail,
-        emailVerifiedAt: new Date(),
-      },
+    const session = await this.getUserSession(sessionId, userId);
+
+    if (res) {
+      if (session) {
+        // set user id cookie for fast authentication
+        if (!userId || userId !== session.user.id) {
+          this.setUserCookie(res, session.user.id);
+        }
+      } else if (sessionId) {
+        // clear invalid cookies.session and cookies.userId
+        this.clearCookies(res);
+      }
+    }
+
+    return session;
+  }
+
+  async changePassword(
+    id: string,
+    newPassword: string
+  ): Promise<Omit<User, 'password'>> {
+    return this.models.user.update(id, { password: newPassword });
+  }
+
+  async changeEmail(
+    id: string,
+    newEmail: string
+  ): Promise<Omit<User, 'password'>> {
+    return this.models.user.update(id, {
+      email: newEmail,
+      emailVerifiedAt: new Date(),
     });
   }
 
   async setEmailVerified(id: string) {
-    return await this.db.user.update({
-      where: {
-        id,
-      },
-      data: {
-        emailVerifiedAt: new Date(),
-      },
-      select: {
-        emailVerifiedAt: true,
-      },
+    return await this.models.user.update(id, {
+      emailVerifiedAt: new Date(),
     });
   }
 
   async sendChangePasswordEmail(email: string, callbackUrl: string) {
-    return this.mailer.sendChangePasswordEmail(email, callbackUrl);
+    return this.mailer.sendChangePasswordMail(email, { url: callbackUrl });
   }
   async sendSetPasswordEmail(email: string, callbackUrl: string) {
-    return this.mailer.sendSetPasswordEmail(email, callbackUrl);
+    return this.mailer.sendSetPasswordMail(email, { url: callbackUrl });
   }
   async sendChangeEmail(email: string, callbackUrl: string) {
-    return this.mailer.sendChangeEmail(email, callbackUrl);
+    return this.mailer.sendChangeEmailMail(email, { url: callbackUrl });
   }
   async sendVerifyChangeEmail(email: string, callbackUrl: string) {
-    return this.mailer.sendVerifyChangeEmail(email, callbackUrl);
+    return this.mailer.sendVerifyChangeEmail(email, { url: callbackUrl });
   }
   async sendVerifyEmail(email: string, callbackUrl: string) {
-    return this.mailer.sendVerifyEmail(email, callbackUrl);
+    return this.mailer.sendVerifyEmail(email, { url: callbackUrl });
   }
   async sendNotificationChangeEmail(email: string) {
-    return this.mailer.sendNotificationChangeEmail(email);
+    return this.mailer.sendNotificationChangeEmail(email, {
+      to: email,
+    });
   }
 
-  async sendSignInEmail(email: string, link: string, signUp: boolean) {
+  async sendSignInEmail(
+    email: string,
+    link: string,
+    otp: string,
+    signUp: boolean
+  ) {
     return signUp
-      ? await this.mailer.sendSignUpMail(link.toString(), {
-          to: email,
-        })
-      : await this.mailer.sendSignInMail(link.toString(), {
-          to: email,
-        });
+      ? await this.mailer.sendSignUpMail(email, { url: link, otp })
+      : await this.mailer.sendSignInMail(email, { url: link, otp });
   }
 }
