@@ -1,23 +1,19 @@
-import { useAFFiNEI18N } from '@affine/i18n/hooks';
-import { ArrowLeftSmallIcon } from '@blocksuite/icons';
+import { useI18n } from '@affine/i18n';
+import { ArrowLeftSmallIcon } from '@blocksuite/icons/rc';
 import type { FC } from 'react';
 
 import type { ButtonProps } from '../../ui/button';
 import { Button } from '../../ui/button';
 
 export const BackButton: FC<ButtonProps> = props => {
-  const t = useAFFiNEI18N();
+  const t = useI18n();
   return (
     <Button
-      type="plain"
+      variant="plain"
       style={{
-        marginTop: 12,
-        marginLeft: -5,
-        paddingLeft: 0,
-        paddingRight: 5,
-        color: 'var(--affine-text-secondary-color)',
+        padding: '2px 8px 2px 0',
       }}
-      icon={<ArrowLeftSmallIcon />}
+      prefix={<ArrowLeftSmallIcon />}
       {...props}
     >
       {t['com.affine.backButton']()}
