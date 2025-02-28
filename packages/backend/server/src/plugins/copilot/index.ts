@@ -1,7 +1,15 @@
+import './config';
+
 import { ServerFeature } from '../../core/config';
-import { QuotaService } from '../../core/quota';
-import { PermissionService } from '../../core/workspaces/permission';
+import { FeatureModule } from '../../core/features';
+import { PermissionModule } from '../../core/permission';
+import { QuotaModule } from '../../core/quota';
 import { Plugin } from '../registry';
+import {
+  CopilotContextResolver,
+  CopilotContextRootResolver,
+  CopilotContextService,
+} from './context';
 import { CopilotController } from './controller';
 import { ChatMessageCache } from './message';
 import { PromptService } from './prompt';
@@ -10,25 +18,41 @@ import {
   CopilotProviderService,
   FalProvider,
   OpenAIProvider,
+  PerplexityProvider,
   registerCopilotProvider,
 } from './providers';
-import { CopilotResolver, UserCopilotResolver } from './resolver';
+import {
+  CopilotResolver,
+  PromptsManagementResolver,
+  UserCopilotResolver,
+} from './resolver';
 import { ChatSessionService } from './session';
+import { CopilotStorage } from './storage';
+import { CopilotWorkflowExecutors, CopilotWorkflowService } from './workflow';
 
 registerCopilotProvider(FalProvider);
 registerCopilotProvider(OpenAIProvider);
+registerCopilotProvider(PerplexityProvider);
 
 @Plugin({
   name: 'copilot',
+  imports: [FeatureModule, QuotaModule, PermissionModule],
   providers: [
-    PermissionService,
-    QuotaService,
     ChatSessionService,
     CopilotResolver,
     ChatMessageCache,
     UserCopilotResolver,
     PromptService,
     CopilotProviderService,
+    CopilotStorage,
+    PromptsManagementResolver,
+    // workflow
+    CopilotWorkflowService,
+    ...CopilotWorkflowExecutors,
+    // context
+    CopilotContextRootResolver,
+    CopilotContextResolver,
+    CopilotContextService,
   ],
   controllers: [CopilotController],
   contributesTo: ServerFeature.Copilot,
@@ -40,5 +64,3 @@ registerCopilotProvider(OpenAIProvider);
   },
 })
 export class CopilotModule {}
-
-export type { CopilotConfig } from './types';

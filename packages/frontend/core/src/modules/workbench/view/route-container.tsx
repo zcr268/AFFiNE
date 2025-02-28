@@ -1,19 +1,17 @@
 import { IconButton } from '@affine/component';
-import { WindowsAppControls } from '@affine/core/components/pure/header/windows-app-controls';
-import { RightSidebarIcon } from '@blocksuite/icons';
+import { AffineErrorBoundary } from '@affine/core/components/affine/affine-error-boundary';
+import { RightSidebarIcon } from '@blocksuite/icons/rc';
 import { useLiveData, useService } from '@toeverything/infra';
-import { useAtomValue } from 'jotai';
 import { Suspense, useCallback } from 'react';
+import { Outlet } from 'react-router-dom';
 
-import { AffineErrorBoundary } from '../../../components/affine/affine-error-boundary';
-import {
-  appSidebarOpenAtom,
-  SidebarSwitch,
-} from '../../../components/app-sidebar';
-import { RightSidebar } from '../../right-sidebar';
+import { AppSidebarService } from '../../app-sidebar';
+import { SidebarSwitch } from '../../app-sidebar/views/sidebar-header';
+import { ViewService } from '../services/view';
+import { WorkbenchService } from '../services/workbench';
 import * as styles from './route-container.css';
-import { useView } from './use-view';
 import { useViewPosition } from './use-view-position';
+import { ViewBodyTarget, ViewHeaderTarget } from './view-islands';
 
 export interface Props {
   route: {
@@ -32,60 +30,56 @@ const ToggleButton = ({
 }) => {
   return (
     <IconButton
-      size="large"
+      size="24"
       onClick={onToggle}
       className={className}
       data-show={show}
+      data-testid="right-sidebar-toggle"
     >
       <RightSidebarIcon />
     </IconButton>
   );
 };
 
-export const RouteContainer = ({ route }: Props) => {
-  const view = useView();
+export const RouteContainer = () => {
   const viewPosition = useViewPosition();
-  const leftSidebarOpen = useAtomValue(appSidebarOpenAtom);
-  const rightSidebar = useService(RightSidebar);
-  const rightSidebarOpen = useLiveData(rightSidebar.isOpen$);
-  const rightSidebarHasViews = useLiveData(rightSidebar.hasViews$);
-  const handleToggleRightSidebar = useCallback(() => {
-    rightSidebar.toggle();
-  }, [rightSidebar]);
-  const isWindowsDesktop = environment.isDesktop && environment.isWindows;
+  const appSidebarService = useService(AppSidebarService).sidebar;
+  const leftSidebarOpen = useLiveData(appSidebarService.open$);
+  const workbench = useService(WorkbenchService).workbench;
+  const view = useService(ViewService).view;
+  const sidebarOpen = useLiveData(workbench.sidebarOpen$);
+  const handleToggleSidebar = useCallback(() => {
+    workbench.toggleSidebar();
+  }, [workbench]);
+
   return (
     <div className={styles.root}>
       <div className={styles.header}>
-        {viewPosition.isFirst && (
+        {!BUILD_CONFIG.isElectron && viewPosition.isFirst && (
           <SidebarSwitch
             show={!leftSidebarOpen}
             className={styles.leftSidebarButton}
           />
         )}
-        <view.header.Target className={styles.viewHeaderContainer} />
-        {viewPosition.isLast && (
-          <>
-            {rightSidebarHasViews && (
-              <ToggleButton
-                show={!rightSidebarOpen}
-                className={styles.rightSidebarButton}
-                onToggle={handleToggleRightSidebar}
-              />
-            )}
-            {isWindowsDesktop && !rightSidebarOpen && (
-              <div className={styles.windowsAppControlsContainer}>
-                <WindowsAppControls />
-              </div>
-            )}
-          </>
+        <ViewHeaderTarget
+          viewId={view.id}
+          className={styles.viewHeaderContainer}
+        />
+        {!BUILD_CONFIG.isElectron && viewPosition.isLast && (
+          <ToggleButton
+            show={!sidebarOpen}
+            className={styles.rightSidebarButton}
+            onToggle={handleToggleSidebar}
+          />
         )}
       </div>
-      <view.body.Target className={styles.viewBodyContainer} />
+
       <AffineErrorBoundary>
         <Suspense>
-          <route.Component />
+          <Outlet />
         </Suspense>
       </AffineErrorBoundary>
+      <ViewBodyTarget viewId={view.id} className={styles.viewBodyContainer} />
     </div>
   );
 };

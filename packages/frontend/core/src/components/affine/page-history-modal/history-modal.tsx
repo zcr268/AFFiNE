@@ -2,38 +2,39 @@ import { Loading, Scrollable } from '@affine/component';
 import { EditorLoading } from '@affine/component/page-detail-skeleton';
 import { Button, IconButton } from '@affine/component/ui/button';
 import { Modal, useConfirmModal } from '@affine/component/ui/modal';
-import { openSettingModalAtom } from '@affine/core/atoms';
-import { useIsWorkspaceOwner } from '@affine/core/hooks/affine/use-is-workspace-owner';
-import { useDocCollectionPageTitle } from '@affine/core/hooks/use-block-suite-workspace-page-title';
-import { useWorkspaceQuota } from '@affine/core/hooks/use-workspace-quota';
-import { Trans } from '@affine/i18n';
-import { useAFFiNEI18N } from '@affine/i18n/hooks';
-import { CloseIcon, ToggleCollapseIcon } from '@blocksuite/icons';
-import type { Doc as BlockSuiteDoc, DocCollection } from '@blocksuite/store';
+import { WorkspaceDialogService } from '@affine/core/modules/dialogs';
+import { DocDisplayMetaService } from '@affine/core/modules/doc-display-meta';
+import { EditorService } from '@affine/core/modules/editor';
+import {
+  GuardService,
+  WorkspacePermissionService,
+} from '@affine/core/modules/permissions';
+import { WorkspaceQuotaService } from '@affine/core/modules/quota';
+import { WorkspaceService } from '@affine/core/modules/workspace';
+import { i18nTime, Trans, useI18n } from '@affine/i18n';
+import { track } from '@affine/track';
+import type { DocMode } from '@blocksuite/affine/blocks';
+import type { Store, Workspace } from '@blocksuite/affine/store';
+import { CloseIcon, ToggleRightIcon } from '@blocksuite/icons/rc';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import type { DialogContentProps } from '@radix-ui/react-dialog';
-import type { PageMode } from '@toeverything/infra';
-import { Doc, useService, Workspace } from '@toeverything/infra';
-import { atom, useAtom, useSetAtom } from 'jotai';
+import { useLiveData, useService } from '@toeverything/infra';
+import { atom, useAtom } from 'jotai';
 import type { PropsWithChildren } from 'react';
 import {
   Fragment,
   Suspense,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useState,
 } from 'react';
 import { encodeStateAsUpdate } from 'yjs';
 
-import { pageHistoryModalAtom } from '../../../atoms/page-history';
-import { mixpanel, timestampToLocalTime } from '../../../utils';
-import { BlockSuiteEditor } from '../../blocksuite/block-suite-editor';
-import { StyledEditorModeSwitch } from '../../blocksuite/block-suite-mode-switch/style';
-import {
-  EdgelessSwitchItem,
-  PageSwitchItem,
-} from '../../blocksuite/block-suite-mode-switch/switch-items';
+import { BlockSuiteEditor } from '../../../blocksuite/block-suite-editor';
+import { PureEditorModeSwitch } from '../../../blocksuite/block-suite-mode-switch';
+import { pageHistoryModalAtom } from '../../atoms/page-history';
 import { AffineErrorBoundary } from '../affine-error-boundary';
 import {
   historyListGroupByDay,
@@ -47,7 +48,7 @@ import * as styles from './styles.css';
 export interface PageHistoryModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  docCollection: DocCollection;
+  docCollection: Workspace;
   pageId: string;
 }
 
@@ -89,9 +90,9 @@ const ModalContainer = ({
 interface HistoryEditorPreviewProps {
   ts?: string;
   historyList: HistoryList;
-  snapshotPage?: BlockSuiteDoc;
-  mode: PageMode;
-  onModeChange: (mode: PageMode) => void;
+  snapshotPage?: Store;
+  mode: DocMode;
+  onModeChange: (mode: DocMode) => void;
   title: string;
 }
 
@@ -103,38 +104,26 @@ const HistoryEditorPreview = ({
   mode,
   title,
 }: HistoryEditorPreviewProps) => {
-  const onSwitchToPageMode = useCallback(() => {
-    mixpanel.track('Button', {
-      resolve: 'HistorySwitchToPageMode',
-    });
-    onModeChange('page');
-  }, [onModeChange]);
-  const onSwitchToEdgelessMode = useCallback(() => {
-    mixpanel.track('Button', {
-      resolve: 'HistorySwitchToEdgelessMode',
-    });
-    onModeChange('edgeless');
-  }, [onModeChange]);
+  const onModeChangeWithTrack = useCallback(
+    (mode: DocMode) => {
+      track.$.docHistory.$.switchPageMode({ mode });
+      onModeChange(mode);
+    },
+    [onModeChange]
+  );
 
   const content = useMemo(() => {
     return (
       <div className={styles.previewContent}>
         <div className={styles.previewHeader}>
-          <StyledEditorModeSwitch switchLeft={mode === 'page'}>
-            <PageSwitchItem
-              data-testid="switch-page-mode-button"
-              active={mode === 'page'}
-              onClick={onSwitchToPageMode}
-            />
-            <EdgelessSwitchItem
-              data-testid="switch-edgeless-mode-button"
-              active={mode === 'edgeless'}
-              onClick={onSwitchToEdgelessMode}
-            />
-          </StyledEditorModeSwitch>
+          <PureEditorModeSwitch mode={mode} setMode={onModeChangeWithTrack} />
           <div className={styles.previewHeaderTitle}>{title}</div>
           <div className={styles.previewHeaderTimestamp}>
-            {ts ? timestampToLocalTime(ts) : null}
+            {ts
+              ? i18nTime(ts, {
+                  absolute: { accuracy: 'minute', noDate: true },
+                })
+              : null}
           </div>
         </div>
 
@@ -146,6 +135,7 @@ const HistoryEditorPreview = ({
                   className={styles.editor}
                   mode={mode}
                   page={snapshotPage}
+                  readonly={true}
                 />
               </Scrollable.Viewport>
               <Scrollable.Scrollbar />
@@ -158,14 +148,7 @@ const HistoryEditorPreview = ({
         )}
       </div>
     );
-  }, [
-    mode,
-    onSwitchToEdgelessMode,
-    onSwitchToPageMode,
-    snapshotPage,
-    title,
-    ts,
-  ]);
+  }, [mode, onModeChangeWithTrack, snapshotPage, title, ts]);
 
   return (
     <div className={styles.previewWrapper}>
@@ -190,43 +173,57 @@ const HistoryEditorPreview = ({
 const planPromptClosedAtom = atom(false);
 
 const PlanPrompt = () => {
-  const workspace = useService(Workspace);
-  const workspaceQuota = useWorkspaceQuota(workspace.id);
+  const workspaceQuotaService = useService(WorkspaceQuotaService);
+  useEffect(() => {
+    workspaceQuotaService.quota.revalidate();
+  }, [workspaceQuotaService]);
+  const workspaceQuota = useLiveData(workspaceQuotaService.quota.quota$);
   const isProWorkspace = useMemo(() => {
-    return workspaceQuota?.humanReadable.name.toLowerCase() !== 'free';
+    return workspaceQuota
+      ? workspaceQuota.humanReadable.name.toLowerCase() !== 'free'
+      : null;
   }, [workspaceQuota]);
-  const isOwner = useIsWorkspaceOwner(workspace.meta);
+  const permissionService = useService(WorkspacePermissionService);
+  const isOwner = useLiveData(permissionService.permission.isOwner$);
+  useEffect(() => {
+    // revalidate permission
+    permissionService.permission.revalidate();
+  }, [permissionService]);
 
-  const setSettingModalAtom = useSetAtom(openSettingModalAtom);
   const [planPromptClosed, setPlanPromptClosed] = useAtom(planPromptClosedAtom);
-
+  const workspaceDialogService = useService(WorkspaceDialogService);
   const closeFreePlanPrompt = useCallback(() => {
     setPlanPromptClosed(true);
   }, [setPlanPromptClosed]);
 
   const onClickUpgrade = useCallback(() => {
-    setSettingModalAtom({
-      open: true,
+    workspaceDialogService.open('setting', {
       activeTab: 'plans',
+      scrollAnchor: 'cloudPricingPlan',
     });
-  }, [setSettingModalAtom]);
+    track.$.docHistory.$.viewPlans();
+  }, [workspaceDialogService]);
 
-  const t = useAFFiNEI18N();
+  const t = useI18n();
 
   const planTitle = useMemo(() => {
     return (
       <div className={styles.planPromptTitle}>
-        {!isProWorkspace
-          ? t[
-              'com.affine.history.confirm-restore-modal.plan-prompt.limited-title'
-            ]()
-          : t['com.affine.history.confirm-restore-modal.plan-prompt.title']()}
+        {
+          isProWorkspace !== null
+            ? !isProWorkspace
+              ? t[
+                  'com.affine.history.confirm-restore-modal.plan-prompt.limited-title'
+                ]()
+              : t[
+                  'com.affine.history.confirm-restore-modal.plan-prompt.title'
+                ]()
+            : '' /* TODO(@catsjuice): loading UI */
+        }
 
-        <IconButton
-          size="small"
-          icon={<CloseIcon />}
-          onClick={closeFreePlanPrompt}
-        />
+        <IconButton onClick={closeFreePlanPrompt}>
+          <CloseIcon />
+        </IconButton>
       </div>
     );
   }, [closeFreePlanPrompt, isProWorkspace, t]);
@@ -286,13 +283,12 @@ const PageHistoryList = ({
   onLoadMore: (() => void) | false;
   loadingMore: boolean;
 }) => {
+  const t = useI18n();
   const historyListByDay = useMemo(() => {
     return historyListGroupByDay(historyList);
   }, [historyList]);
 
   const [collapsedMap, setCollapsedMap] = useState<Record<number, boolean>>({});
-
-  const t = useAFFiNEI18N();
 
   useLayoutEffect(() => {
     if (historyList.length > 0 && !activeVersion) {
@@ -327,7 +323,7 @@ const PageHistoryList = ({
                     data-testid="page-list-group-header-collapsed-button"
                     className={styles.collapsedIconContainer}
                   >
-                    <ToggleCollapseIcon
+                    <ToggleRightIcon
                       className={styles.collapsedIcon}
                       data-collapsed={!!collapsed}
                     />
@@ -348,7 +344,9 @@ const PageHistoryList = ({
                           data-active={activeVersion === history.timestamp}
                         >
                           <button>
-                            {timestampToLocalTime(history.timestamp)}
+                            {i18nTime(history.timestamp, {
+                              absolute: { noDate: true, accuracy: 'minute' },
+                            })}
                           </button>
                         </div>
                         {idx > list.length - 1 ? (
@@ -363,7 +361,7 @@ const PageHistoryList = ({
           })}
           {onLoadMore ? (
             <Button
-              type="plain"
+              variant="plain"
               loading={loadingMore}
               disabled={loadingMore}
               className={styles.historyItemLoadMore}
@@ -380,7 +378,7 @@ const PageHistoryList = ({
 };
 
 const EmptyHistoryPrompt = () => {
-  const t = useAFFiNEI18N();
+  const t = useI18n();
 
   return (
     <div
@@ -403,12 +401,14 @@ const PageHistoryManager = ({
   pageId,
   onClose,
 }: {
-  docCollection: DocCollection;
+  docCollection: Workspace;
   pageId: string;
   onClose: () => void;
 }) => {
   const workspaceId = docCollection.id;
   const [activeVersion, setActiveVersion] = useState<string>();
+
+  const guardService = useService(GuardService);
 
   const pageDocId = useMemo(() => {
     return docCollection.getDoc(pageId)?.spaceDoc.guid ?? pageId;
@@ -417,7 +417,7 @@ const PageHistoryManager = ({
 
   const snapshotPage = useSnapshotPage(docCollection, pageDocId, activeVersion);
 
-  const t = useAFFiNEI18N();
+  const t = useI18n();
 
   const { onRestore, isMutating } = useRestorePage(docCollection, pageId);
 
@@ -434,10 +434,14 @@ const PageHistoryManager = ({
     [activeVersion, onClose, onRestore, snapshotPage]
   );
 
-  const page = useService(Doc);
-  const [mode, setMode] = useState<PageMode>(page.mode$.value);
+  const editor = useService(EditorService).editor;
+  const [mode, setMode] = useState<DocMode>(editor.mode$.value);
 
-  const title = useDocCollectionPageTitle(docCollection, pageId);
+  const docDisplayMetaService = useService(DocDisplayMetaService);
+  const i18n = useI18n();
+
+  const title = useLiveData(docDisplayMetaService.title$(pageId));
+  const canEdit = useLiveData(guardService.can$('Doc_Update', pageDocId));
 
   const onConfirmRestore = useCallback(() => {
     openConfirmModal({
@@ -448,10 +452,10 @@ const PageHistoryManager = ({
         ['data-testid' as string]: 'confirm-restore-history-modal',
         style: { padding: '20px 26px' },
       },
+      confirmText: t['com.affine.history.confirm-restore-modal.restore'](),
       confirmButtonOptions: {
-        type: 'primary',
+        variant: 'primary',
         ['data-testid' as string]: 'confirm-restore-history-button',
-        children: t['com.affine.history.confirm-restore-modal.restore'](),
       },
       onConfirm: handleRestore,
     });
@@ -471,7 +475,7 @@ const PageHistoryManager = ({
           snapshotPage={snapshotPage}
           mode={mode}
           onModeChange={setMode}
-          title={title}
+          title={i18n.t(title)}
         />
 
         <PageHistoryList
@@ -490,14 +494,14 @@ const PageHistoryManager = ({
       ) : null}
 
       <div className={styles.historyFooter}>
-        <Button type="plain" onClick={onClose}>
+        <Button onClick={onClose}>
           {t['com.affine.history.back-to-page']()}
         </Button>
         <div className={styles.spacer} />
         <Button
-          type="primary"
+          variant="primary"
           onClick={onConfirmRestore}
-          disabled={isMutating || !activeVersion}
+          disabled={isMutating || !activeVersion || !canEdit}
         >
           {t['com.affine.history.restore-current-version']()}
         </Button>
@@ -531,12 +535,10 @@ export const PageHistoryModal = ({
 
 export const GlobalPageHistoryModal = () => {
   const [{ open, pageId }, setState] = useAtom(pageHistoryModalAtom);
-  const workspace = useService(Workspace);
+  const workspace = useService(WorkspaceService).workspace;
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      mixpanel.track('Button', {
-        resolve: open ? 'OpenPageHistoryModal' : 'ClosePageHistoryModal',
-      });
+      track.$.docHistory.$[open ? 'open' : 'close']();
       setState(prev => ({
         ...prev,
         open,

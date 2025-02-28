@@ -1,180 +1,269 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
 
-import type { EventPayload } from '../../fundamentals';
-import { OnEvent, PrismaTransaction } from '../../fundamentals';
-import { FeatureKind } from '../features';
-import { QuotaConfig } from './quota';
-import { QuotaType } from './types';
+import { InternalServerError, MemberQuotaExceeded, OnEvent } from '../../base';
+import {
+  Models,
+  type UserQuota,
+  WorkspaceQuota as BaseWorkspaceQuota,
+} from '../../models';
+import { PermissionService } from '../permission';
+import { WorkspaceBlobStorage } from '../storage';
+import {
+  UserQuotaHumanReadableType,
+  UserQuotaType,
+  WorkspaceQuotaHumanReadableType,
+  WorkspaceQuotaType,
+} from './types';
+import { formatDate, formatSize } from './utils';
+
+type UserQuotaWithUsage = Omit<UserQuotaType, 'humanReadable'>;
+type WorkspaceQuota = Omit<BaseWorkspaceQuota, 'seatQuota'> & {
+  ownerQuota?: string;
+};
+type WorkspaceQuotaWithUsage = Omit<WorkspaceQuotaType, 'humanReadable'>;
 
 @Injectable()
 export class QuotaService {
-  constructor(private readonly prisma: PrismaClient) {}
+  protected logger = new Logger(QuotaService.name);
 
-  // get activated user quota
-  async getUserQuota(userId: string) {
-    const quota = await this.prisma.userFeatures.findFirst({
-      where: {
-        user: {
-          id: userId,
-        },
-        feature: {
-          type: FeatureKind.Quota,
-        },
-        activated: true,
-      },
-      select: {
-        reason: true,
-        createdAt: true,
-        expiredAt: true,
-        featureId: true,
-      },
-    });
+  constructor(
+    private readonly models: Models,
+    private readonly permissions: PermissionService,
+    private readonly storage: WorkspaceBlobStorage
+  ) {}
 
+  @OnEvent('user.postCreated')
+  async onUserCreated({ id }: Events['user.postCreated']) {
+    await this.setupUserBaseQuota(id);
+  }
+
+  async getUserQuota(userId: string): Promise<UserQuota> {
+    let quota = await this.models.userFeature.getQuota(userId);
+
+    // not possible, but just in case, we do a little fix for user to avoid system dump
     if (!quota) {
-      // this should unreachable
-      throw new Error(`User ${userId} has no quota`);
+      await this.setupUserBaseQuota(userId);
+      quota = await this.models.userFeature.getQuota(userId);
     }
 
-    const feature = await QuotaConfig.get(this.prisma, quota.featureId);
-    return { ...quota, feature };
-  }
-
-  // get user all quota records
-  async getUserQuotas(userId: string) {
-    const quotas = await this.prisma.userFeatures.findMany({
-      where: {
-        user: {
-          id: userId,
-        },
-        feature: {
-          type: FeatureKind.Quota,
-        },
-      },
-      select: {
-        activated: true,
-        reason: true,
-        createdAt: true,
-        expiredAt: true,
-        featureId: true,
-      },
-    });
-    const configs = await Promise.all(
-      quotas.map(async quota => {
-        try {
-          return {
-            ...quota,
-            feature: await QuotaConfig.get(this.prisma, quota.featureId),
-          };
-        } catch (_) {}
-        return null as unknown as typeof quota & {
-          feature: QuotaConfig;
-        };
-      })
+    const unlimitedCopilot = await this.models.userFeature.has(
+      userId,
+      'unlimited_copilot'
     );
 
-    return configs.filter(quota => !!quota);
+    if (!quota) {
+      throw new InternalServerError(
+        'User quota not found and can not be created.'
+      );
+    }
+
+    return {
+      ...quota.configs,
+      copilotActionLimit: unlimitedCopilot
+        ? undefined
+        : quota.configs.copilotActionLimit,
+    } as UserQuotaWithUsage;
   }
 
-  // switch user to a new quota
-  // currently each user can only have one quota
-  async switchUserQuota(
-    userId: string,
-    quota: QuotaType,
-    reason?: string,
-    expiredAt?: Date
-  ) {
-    await this.prisma.$transaction(async tx => {
-      const hasSameActivatedQuota = await this.hasQuota(userId, quota, tx);
+  async getUserQuotaWithUsage(userId: string): Promise<UserQuotaWithUsage> {
+    const quota = await this.getUserQuota(userId);
+    const usedStorageQuota = await this.getUserStorageUsage(userId);
 
-      if (hasSameActivatedQuota) {
-        // don't need to switch
-        return;
+    return { ...quota, usedStorageQuota };
+  }
+
+  async getUserStorageUsage(userId: string) {
+    const workspaces = await this.permissions.getOwnedWorkspaces(userId);
+    const workspacesWithQuota =
+      await this.models.workspaceFeature.batchHasQuota(workspaces);
+
+    const sizes = await Promise.allSettled(
+      workspaces
+        .filter(w => !workspacesWithQuota.includes(w))
+        .map(workspace => this.storage.totalSize(workspace))
+    );
+
+    return sizes.reduce((total, size) => {
+      if (size.status === 'fulfilled') {
+        // ensure that size is within the safe range of gql
+        const totalSize = total + size.value;
+        if (Number.isSafeInteger(totalSize)) {
+          return totalSize;
+        } else {
+          this.logger.error(`Workspace size is invalid: ${size.value}`);
+        }
+      } else {
+        this.logger.error(`Failed to get workspace size`, size.reason);
       }
-
-      const latestPlanVersion = await tx.features.aggregate({
-        where: {
-          feature: quota,
-        },
-        _max: {
-          version: true,
-        },
-      });
-
-      // we will deactivate all exists quota for this user
-      await tx.userFeatures.updateMany({
-        where: {
-          id: undefined,
-          userId,
-          feature: {
-            type: FeatureKind.Quota,
-          },
-        },
-        data: {
-          activated: false,
-        },
-      });
-
-      await tx.userFeatures.create({
-        data: {
-          user: {
-            connect: {
-              id: userId,
-            },
-          },
-          feature: {
-            connect: {
-              feature_version: {
-                feature: quota,
-                version: latestPlanVersion._max.version || 1,
-              },
-              type: FeatureKind.Quota,
-            },
-          },
-          reason: reason ?? 'switch quota',
-          activated: true,
-          expiredAt,
-        },
-      });
-    });
+      return total;
+    }, 0);
   }
 
-  async hasQuota(userId: string, quota: QuotaType, tx?: PrismaTransaction) {
-    const executor = tx ?? this.prisma;
+  async getWorkspaceStorageUsage(workspaceId: string) {
+    const totalSize = await this.storage.totalSize(workspaceId);
+    // ensure that size is within the safe range of gql
+    if (Number.isSafeInteger(totalSize)) {
+      return totalSize;
+    } else {
+      this.logger.error(`Workspace size is invalid: ${totalSize}`);
+    }
 
-    return executor.userFeatures
-      .count({
-        where: {
-          userId,
-          feature: {
-            feature: quota,
-            type: FeatureKind.Quota,
-          },
-          activated: true,
-        },
-      })
-      .then(count => count > 0);
+    return 0;
   }
 
-  @OnEvent('user.subscription.activated')
-  async onSubscriptionUpdated({
-    userId,
-  }: EventPayload<'user.subscription.activated'>) {
-    await this.switchUserQuota(
-      userId,
-      QuotaType.ProPlanV1,
-      'subscription activated'
+  async getWorkspaceQuota(workspaceId: string): Promise<WorkspaceQuota> {
+    const quota = await this.models.workspaceFeature.getQuota(workspaceId);
+
+    if (!quota) {
+      // get and convert to workspace quota from owner's quota
+      // TODO(@forehalo): replace it with `WorkspaceRoleModel` when it's ready
+      const owner = await this.permissions.getWorkspaceOwner(workspaceId);
+      const ownerQuota = await this.getUserQuota(owner.id);
+
+      return {
+        ...ownerQuota,
+        ownerQuota: owner.id,
+      };
+    }
+
+    return quota.configs;
+  }
+
+  async getWorkspaceQuotaWithUsage(
+    workspaceId: string
+  ): Promise<WorkspaceQuotaWithUsage> {
+    const quota = await this.getWorkspaceQuota(workspaceId);
+    const usedStorageQuota = quota.ownerQuota
+      ? await this.getUserStorageUsage(quota.ownerQuota)
+      : await this.getWorkspaceStorageUsage(workspaceId);
+    const memberCount =
+      await this.permissions.getWorkspaceMemberCount(workspaceId);
+
+    return {
+      ...quota,
+      usedStorageQuota,
+      memberCount,
+      usedSize: usedStorageQuota,
+    };
+  }
+
+  formatUserQuota(
+    quota: Omit<UserQuotaType, 'humanReadable'>
+  ): UserQuotaHumanReadableType {
+    return {
+      name: quota.name,
+      blobLimit: formatSize(quota.blobLimit),
+      storageQuota: formatSize(quota.storageQuota),
+      usedStorageQuota: formatSize(quota.usedStorageQuota),
+      historyPeriod: formatDate(quota.historyPeriod),
+      memberLimit: quota.memberLimit.toString(),
+      copilotActionLimit: quota.copilotActionLimit
+        ? `${quota.copilotActionLimit} times`
+        : 'Unlimited',
+    };
+  }
+
+  async getWorkspaceSeatQuota(workspaceId: string) {
+    const quota = await this.getWorkspaceQuota(workspaceId);
+    const memberCount =
+      await this.permissions.getWorkspaceMemberCount(workspaceId);
+
+    return {
+      memberCount,
+      memberLimit: quota.memberLimit,
+    };
+  }
+
+  async tryCheckSeat(workspaceId: string, excludeSelf = false) {
+    const quota = await this.getWorkspaceSeatQuota(workspaceId);
+
+    return quota.memberCount - (excludeSelf ? 1 : 0) < quota.memberLimit;
+  }
+
+  async checkSeat(workspaceId: string, excludeSelf = false) {
+    const available = await this.tryCheckSeat(workspaceId, excludeSelf);
+
+    if (!available) {
+      throw new MemberQuotaExceeded();
+    }
+  }
+
+  formatWorkspaceQuota(
+    quota: Omit<WorkspaceQuotaType, 'humanReadable'>
+  ): WorkspaceQuotaHumanReadableType {
+    return {
+      name: quota.name,
+      blobLimit: formatSize(quota.blobLimit),
+      storageQuota: formatSize(quota.storageQuota),
+      storageQuotaUsed: formatSize(quota.usedStorageQuota),
+      historyPeriod: formatDate(quota.historyPeriod),
+      memberLimit: quota.memberLimit.toString(),
+      memberCount: quota.memberCount.toString(),
+    };
+  }
+
+  async getUserQuotaCalculator(userId: string) {
+    const quota = await this.getUserQuota(userId);
+    const usedSize = await this.getUserStorageUsage(userId);
+
+    return this.generateQuotaCalculator(
+      quota.storageQuota,
+      quota.blobLimit,
+      usedSize
     );
   }
 
-  @OnEvent('user.subscription.canceled')
-  async onSubscriptionCanceled(
-    userId: EventPayload<'user.subscription.canceled'>
+  async getWorkspaceQuotaCalculator(workspaceId: string) {
+    const quota = await this.getWorkspaceQuota(workspaceId);
+    const unlimited = await this.models.workspaceFeature.has(
+      workspaceId,
+      'unlimited_workspace'
+    );
+
+    // quota check will be disabled for unlimited workspace
+    // we save a complicated db read for used size
+    if (unlimited) {
+      return this.generateQuotaCalculator(0, quota.blobLimit, 0, true);
+    }
+
+    const usedSize = quota.ownerQuota
+      ? await this.getUserStorageUsage(quota.ownerQuota)
+      : await this.getWorkspaceStorageUsage(workspaceId);
+
+    return this.generateQuotaCalculator(
+      quota.storageQuota,
+      quota.blobLimit,
+      usedSize
+    );
+  }
+
+  private async setupUserBaseQuota(userId: string) {
+    await this.models.userFeature.add(userId, 'free_plan_v1', 'sign up');
+  }
+
+  private generateQuotaCalculator(
+    storageQuota: number,
+    blobLimit: number,
+    usedQuota: number,
+    unlimited = false
   ) {
-    await this.switchUserQuota(
-      userId,
-      QuotaType.FreePlanV1,
-      'subscription canceled'
-    );
+    const checkExceeded = (recvSize: number) => {
+      const currentSize = usedQuota + recvSize;
+      // only skip total storage check if workspace has unlimited feature
+      if (currentSize > storageQuota && !unlimited) {
+        this.logger.warn(
+          `storage size limit exceeded: ${currentSize} > ${storageQuota}`
+        );
+        return true;
+      } else if (recvSize > blobLimit) {
+        this.logger.warn(
+          `blob size limit exceeded: ${recvSize} > ${blobLimit}`
+        );
+        return true;
+      } else {
+        return false;
+      }
+    };
+    return checkExceeded;
   }
 }

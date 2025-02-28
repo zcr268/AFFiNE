@@ -1,10 +1,7 @@
-import { apis } from '@affine/electron-api';
-import { fetchWithTraceReport } from '@affine/graphql';
-import { ArrowRightSmallIcon } from '@blocksuite/icons';
+import { ArrowRightSmallIcon } from '@blocksuite/icons/rc';
 import clsx from 'clsx';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Location } from 'react-router-dom';
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { useLocation, useNavigate } from 'react-router-dom';
 import useSWR from 'swr';
 
@@ -47,7 +44,7 @@ function getCallbackUrl(location: Location) {
       const parsedUrl = new URL(url);
       return parsedUrl.pathname + parsedUrl.search;
     }
-  } catch (_) {}
+  } catch {}
   return null;
 }
 
@@ -101,18 +98,16 @@ export const ScrollableLayout = ({
 export const OnboardingPage = ({
   user,
   onOpenAffine,
-  windowControl,
 }: {
   user: User;
   onOpenAffine: () => void;
-  windowControl?: React.ReactNode;
 }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [questionIdx, setQuestionIdx] = useState(0);
   const { data: questions } = useSWR<Question[]>(
     '/api/worker/questionnaire',
-    url => fetchWithTraceReport(url).then(r => r.json()),
+    url => fetch(url).then(r => r.json()),
     { suspense: true, revalidateOnFocus: false }
   );
   const [options, setOptions] = useState(new Set<string>());
@@ -123,22 +118,15 @@ export const OnboardingPage = ({
     () => questions?.[questionIdx],
     [questionIdx, questions]
   );
-  const isMacosDesktop = environment.isDesktop && environment.isMacOs;
-  const isWindowsDesktop = environment.isDesktop && environment.isWindows;
-
-  useEffect(() => {
-    if (environment.isDesktop) {
-      // to hide macOS window control buttons
-      apis?.ui.handleSidebarVisibilityChange(false).catch(err => {
-        console.error(err);
-      });
-    }
-  }, []);
+  const isMacosDesktop = BUILD_CONFIG.isElectron && environment.isMacOs;
+  const isWindowsDesktop = BUILD_CONFIG.isElectron && environment.isWindows;
 
   if (!questions) {
     return null;
   }
 
+  // deprecated
+  // TODO(@forehalo): remove
   if (callbackUrl?.startsWith('/open-app/signin-redirect')) {
     const url = new URL(callbackUrl, window.location.origin);
     url.searchParams.set('next', 'onboarding');
@@ -151,19 +139,16 @@ export const OnboardingPage = ({
     return (
       <ScrollableLayout
         headerItems={
-          <>
-            {isWindowsDesktop ? windowControl : null}
-            <Button
-              className={clsx(styles.button, {
-                [styles.disableButton]: questionIdx === 0,
-                [styles.windowsAppButton]: isWindowsDesktop,
-              })}
-              size="extraLarge"
-              onClick={() => setQuestionIdx(questions.length)}
-            >
-              Skip
-            </Button>
-          </>
+          <Button
+            className={clsx(styles.button, {
+              [styles.disableButton]: questionIdx === 0,
+              [styles.windowsAppButton]: isWindowsDesktop,
+            })}
+            size="extraLarge"
+            onClick={() => setQuestionIdx(questions.length)}
+          >
+            Skip
+          </Button>
         }
         isMacosDesktop={isMacosDesktop}
         isWindowsDesktop={isWindowsDesktop}
@@ -173,11 +158,11 @@ export const OnboardingPage = ({
           <div className={styles.optionsWrapper}>
             {question.options &&
               question.options.length > 0 &&
-              question.options.map((option, optionIndex) => {
+              question.options.map(option => {
                 if (option.type === 'checkbox') {
                   return (
                     <Checkbox
-                      key={optionIndex}
+                      key={option.label}
                       name={option.value}
                       className={styles.checkBox}
                       labelClassName={styles.label}
@@ -198,7 +183,7 @@ export const OnboardingPage = ({
                 } else if (option.type === 'input') {
                   return (
                     <Input
-                      key={optionIndex}
+                      key={option.label}
                       className={styles.input}
                       type="text"
                       size="large"
@@ -225,7 +210,7 @@ export const OnboardingPage = ({
             </Button>
             <Button
               className={styles.button}
-              type="primary"
+              variant="primary"
               size="extraLarge"
               itemType="submit"
               onClick={() => {
@@ -242,7 +227,7 @@ export const OnboardingPage = ({
                   };
 
                   // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                  fetchWithTraceReport('/api/worker/questionnaire', {
+                  fetch('/api/worker/questionnaire', {
                     method: 'POST',
                     body: JSON.stringify(answer),
                   }).finally(() => {
@@ -254,8 +239,7 @@ export const OnboardingPage = ({
                   setQuestionIdx(questionIdx + 1);
                 }
               }}
-              iconPosition="end"
-              icon={<ArrowRightSmallIcon />}
+              suffix={<ArrowRightSmallIcon />}
             >
               {questionIdx === 0 ? 'start' : 'Next'}
             </Button>
@@ -266,7 +250,6 @@ export const OnboardingPage = ({
   }
   return (
     <ScrollableLayout
-      headerItems={isWindowsDesktop ? windowControl : null}
       isMacosDesktop={isMacosDesktop}
       isWindowsDesktop={isWindowsDesktop}
     >
@@ -278,7 +261,7 @@ export const OnboardingPage = ({
         </p>
         <Button
           className={clsx(styles.button, styles.openAFFiNEButton)}
-          type="primary"
+          variant="primary"
           size="extraLarge"
           onClick={() => {
             if (callbackUrl) {
@@ -287,8 +270,7 @@ export const OnboardingPage = ({
               onOpenAffine();
             }
           }}
-          iconPosition="end"
-          icon={<ArrowRightSmallIcon />}
+          suffix={<ArrowRightSmallIcon />}
         >
           Get Started
         </Button>

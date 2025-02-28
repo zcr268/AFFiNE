@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode } from 'react';
 
 import type { ButtonProps } from '../button';
 
@@ -12,8 +12,9 @@ export interface Notification {
   borderColor?: string;
   background?: string;
   foreground?: string;
+  alignMessage?: 'title' | 'icon';
   action?: {
-    label: string;
+    label: ReactNode;
     onClick: (() => void) | (() => Promise<void>);
     buttonProps?: ButtonProps;
     /**
@@ -22,11 +23,18 @@ export interface Notification {
     autoClose?: boolean;
   };
 
+  rootAttrs?: HTMLAttributes<HTMLDivElement>;
+
   // custom slots
+  thumb?: ReactNode;
   title?: ReactNode;
   message?: ReactNode;
   icon?: ReactNode;
+  iconColor?: string;
   footer?: ReactNode;
+
+  // events
+  onDismiss?: () => void;
 }
 
 export interface NotificationCenterProps {
@@ -35,4 +43,8 @@ export interface NotificationCenterProps {
 
 export interface NotificationCustomRendererProps {
   onDismiss?: () => void;
+}
+
+export interface NotificationCardProps extends HTMLAttributes<HTMLDivElement> {
+  notification: Notification;
 }

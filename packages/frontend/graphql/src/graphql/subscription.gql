@@ -1,5 +1,6 @@
 query subscription {
   currentUser {
+    id
     subscriptions {
       id
       status
@@ -9,6 +10,7 @@ query subscription {
       end
       nextBillAt
       canceledAt
+      variant
     }
   }
 }

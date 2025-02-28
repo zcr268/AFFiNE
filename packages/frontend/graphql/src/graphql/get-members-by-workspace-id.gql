@@ -1,14 +1,15 @@
-query getMembersByWorkspaceId($workspaceId: String!, $skip: Int!, $take: Int!) {
+query getMembersByWorkspaceId($workspaceId: String!, $skip: Int, $take: Int, $query: String) {
   workspace(id: $workspaceId) {
-    members(skip: $skip, take: $take) {
+    memberCount
+    members(skip: $skip, take: $take, query: $query) {
       id
       name
       email
       avatarUrl
       permission
       inviteId
-      accepted
       emailVerified
+      status
     }
   }
 }

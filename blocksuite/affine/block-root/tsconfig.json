@@ -1,0 +1,39 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "tsBuildInfoFile": "./dist/tsconfig.tsbuildinfo"
+  },
+  "include": ["./src"],
+  "references": [
+    { "path": "../block-attachment" },
+    { "path": "../block-bookmark" },
+    { "path": "../block-data-view" },
+    { "path": "../block-database" },
+    { "path": "../block-edgeless-text" },
+    { "path": "../block-embed" },
+    { "path": "../block-frame" },
+    { "path": "../block-image" },
+    { "path": "../block-latex" },
+    { "path": "../block-list" },
+    { "path": "../block-note" },
+    { "path": "../block-paragraph" },
+    { "path": "../block-surface" },
+    { "path": "../block-surface-ref" },
+    { "path": "../block-table" },
+    { "path": "../components" },
+    { "path": "../model" },
+    { "path": "../shared" },
+    { "path": "../widget-drag-handle" },
+    { "path": "../widget-edgeless-auto-connect" },
+    { "path": "../widget-frame-title" },
+    { "path": "../widget-remote-selection" },
+    { "path": "../widget-scroll-anchoring" },
+    { "path": "../../framework/block-std" },
+    { "path": "../data-view" },
+    { "path": "../../framework/global" },
+    { "path": "../../framework/inline" },
+    { "path": "../../framework/store" }
+  ]
+}

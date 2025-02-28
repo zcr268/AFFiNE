@@ -1,0 +1,20 @@
+query listContextDocsAndFiles($workspaceId: String!, $sessionId: String!, $contextId: String!) {
+  currentUser {
+    copilot(workspaceId: $workspaceId) {
+      contexts(sessionId: $sessionId, contextId: $contextId) {
+        docs {
+          id
+          createdAt
+        }
+        files {
+          id
+          name
+          blobId
+          chunkSize
+          status
+          createdAt
+        }
+      }
+    }
+  }
+}

@@ -1,41 +1,42 @@
 import { Avatar } from '@affine/component/ui/avatar';
-import {
-  Menu,
-  MenuIcon,
-  MenuItem,
-  MenuSeparator,
-} from '@affine/component/ui/menu';
-import { useCurrentUser } from '@affine/core/hooks/affine/use-current-user';
-import { useAsyncCallback } from '@affine/core/hooks/affine-async-hooks';
-import { useUserSubscription } from '@affine/core/hooks/use-subscription';
-import { signOutCloud } from '@affine/core/utils/cloud-utils';
-import { SubscriptionPlan } from '@affine/graphql';
-import { useAFFiNEI18N } from '@affine/i18n/hooks';
-import { SignOutIcon } from '@blocksuite/icons';
-import { useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Menu, MenuItem, MenuSeparator } from '@affine/component/ui/menu';
+import { useAsyncCallback } from '@affine/core/components/hooks/affine-async-hooks';
+import { useI18n } from '@affine/i18n';
+import { SignOutIcon } from '@blocksuite/icons/rc';
+import { useLiveData, useService } from '@toeverything/infra';
+import { useEffect, useMemo } from 'react';
 
+import { AuthService, SubscriptionService } from '../../../modules/cloud';
 import * as styles from './styles.css';
 
 const UserInfo = () => {
-  const user = useCurrentUser();
-  const [subscription] = useUserSubscription();
-  const plan = subscription?.plan ?? SubscriptionPlan.Free;
+  const authService = useService(AuthService);
+  const user = useLiveData(authService.session.account$);
+  const subscription = useService(SubscriptionService).subscription;
+  useEffect(() => {
+    subscription.revalidate();
+  }, [subscription]);
+  const plan = useLiveData(subscription.pro$)?.plan;
+
+  if (!user) {
+    // TODO(@eyhn): loading UI
+    return null;
+  }
   return (
     <div className={styles.accountCard}>
       <Avatar
         size={28}
-        name={user.name}
-        url={user.avatarUrl}
+        name={user.label}
+        url={user.avatar}
         className={styles.avatar}
       />
 
       <div className={styles.content}>
         <div className={styles.nameContainer}>
-          <div className={styles.userName} title={user.name}>
-            {user.name}
+          <div className={styles.userName} title={user.label}>
+            {user.label}
           </div>
-          <div className={styles.userPlanButton}>{plan}</div>
+          {plan && <div className={styles.userPlanButton}>{plan}</div>}
         </div>
         <div className={styles.userEmail} title={user.email}>
           {user.email}
@@ -46,13 +47,13 @@ const UserInfo = () => {
 };
 
 export const PublishPageUserAvatar = () => {
-  const user = useCurrentUser();
-  const t = useAFFiNEI18N();
-  const location = useLocation();
+  const authService = useService(AuthService);
+  const user = useLiveData(authService.session.account$);
+  const t = useI18n();
 
   const handleSignOut = useAsyncCallback(async () => {
-    await signOutCloud(location.pathname);
-  }, [location.pathname]);
+    await authService.signOut();
+  }, [authService]);
 
   const menuItem = useMemo(() => {
     return (
@@ -60,11 +61,7 @@ export const PublishPageUserAvatar = () => {
         <UserInfo />
         <MenuSeparator />
         <MenuItem
-          preFix={
-            <MenuIcon>
-              <SignOutIcon />
-            </MenuIcon>
-          }
+          prefixIcon={<SignOutIcon />}
           data-testid="share-page-sign-out-option"
           onClick={handleSignOut}
         >
@@ -74,17 +71,19 @@ export const PublishPageUserAvatar = () => {
     );
   }, [handleSignOut, t]);
 
+  if (!user) {
+    return null;
+  }
+
   return (
     <Menu
       items={menuItem}
       contentOptions={{
-        style: {
-          transform: 'translateX(-16px)',
-        },
+        align: 'end',
       }}
     >
       <div className={styles.iconWrapper} data-testid="share-page-user-avatar">
-        <Avatar size={24} url={user.avatarUrl} name={user.name} />
+        <Avatar size={24} url={user.avatar} name={user.label} />
       </div>
     </Menu>
   );

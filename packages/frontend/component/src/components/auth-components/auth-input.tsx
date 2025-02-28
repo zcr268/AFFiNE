@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import type { ReactNode } from 'react';
 
 import type { InputProps } from '../../ui/input';
 import { Input } from '../../ui/input';
@@ -6,15 +7,13 @@ import * as styles from './share.css';
 export type AuthInputProps = InputProps & {
   label?: string;
   error?: boolean;
-  errorHint?: string;
-  withoutHint?: boolean;
+  errorHint?: ReactNode;
   onEnter?: () => void;
 };
 export const AuthInput = ({
   label,
   error,
   errorHint,
-  withoutHint = false,
   onEnter,
   className,
   ...inputProps
@@ -22,7 +21,7 @@ export const AuthInput = ({
   return (
     <div
       className={clsx(styles.authInputWrapper, {
-        'without-hint': withoutHint,
+        'with-hint': !!errorHint,
       })}
     >
       {label ? <label>{label}</label> : null}
@@ -30,21 +29,11 @@ export const AuthInput = ({
         className={clsx(className)}
         size="extraLarge"
         status={error ? 'error' : 'default'}
-        onKeyDown={e => {
-          if (e.key === 'Enter') {
-            onEnter?.();
-          }
-        }}
+        onEnter={onEnter}
         {...inputProps}
       />
-      {error && errorHint && !withoutHint ? (
-        <div
-          className={clsx(styles.formHint, {
-            error: error,
-          })}
-        >
-          {errorHint}
-        </div>
+      {error && errorHint ? (
+        <div className={styles.authInputError}>{errorHint}</div>
       ) : null}
     </div>
   );

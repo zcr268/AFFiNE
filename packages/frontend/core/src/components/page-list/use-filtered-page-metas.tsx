@@ -1,14 +1,14 @@
-import { FavoriteItemsAdapter } from '@affine/core/modules/workspace';
+import { CompatibleFavoriteItemsAdapter } from '@affine/core/modules/favorite';
+import { ShareDocsListService } from '@affine/core/modules/share-doc';
 import type { Collection, Filter } from '@affine/env/filter';
-import type { DocMeta } from '@blocksuite/store';
-import { useLiveData, useService, type Workspace } from '@toeverything/infra';
-import { useMemo } from 'react';
+import { PublicDocMode } from '@affine/graphql';
+import type { DocMeta } from '@blocksuite/affine/store';
+import { useLiveData, useService } from '@toeverything/infra';
+import { useCallback, useEffect, useMemo } from 'react';
 
-import { usePublicPages } from '../../hooks/affine/use-is-shared-page';
 import { filterPage, filterPageByRules } from './use-collection-manager';
 
 export const useFilteredPageMetas = (
-  workspace: Workspace,
   pageMetas: DocMeta[],
   options: {
     trash?: boolean;
@@ -16,8 +16,27 @@ export const useFilteredPageMetas = (
     collection?: Collection;
   } = {}
 ) => {
-  const { getPublicMode } = usePublicPages(workspace);
-  const favAdapter = useService(FavoriteItemsAdapter);
+  const shareDocsListService = useService(ShareDocsListService);
+  const shareDocs = useLiveData(shareDocsListService.shareDocs?.list$);
+
+  const getPublicMode = useCallback(
+    (id: string) => {
+      const mode = shareDocs?.find(shareDoc => shareDoc.id === id)?.mode;
+      return mode
+        ? mode === PublicDocMode.Edgeless
+          ? ('edgeless' as const)
+          : ('page' as const)
+        : undefined;
+    },
+    [shareDocs]
+  );
+
+  useEffect(() => {
+    // TODO(@eyhn): loading & error UI
+    shareDocsListService.shareDocs?.revalidate();
+  }, [shareDocsListService]);
+
+  const favAdapter = useService(CompatibleFavoriteItemsAdapter);
   const favoriteItems = useLiveData(favAdapter.favorites$);
 
   const filteredPageMetas = useMemo(
